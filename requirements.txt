@@ -1,0 +1,16 @@
+# Core
+pydantic>=2.7
+langgraph>=0.2
+rich>=13.7
+
+# Bedrock (reasoning layer)
+boto3>=1.34
+
+# Snowflake (real platform backend; optional for the simulated demo)
+snowflake-connector-python>=3.12
+
+# Integrations (optional; mock adapters used when absent)
+requests>=2.31
+
+# Dev
+pytest>=8.0

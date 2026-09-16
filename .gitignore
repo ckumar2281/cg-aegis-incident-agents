@@ -1,0 +1,22 @@
+# Secrets -- never commit
+.env
+.env.*
+!.env.example
+*.pem
+credentials.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+aegis-venv/
+.pytest_cache/
+.ruff_cache/
+
+# Outputs
+runs/
+*.html
+!docs/**/*.html
+.DS_Store
