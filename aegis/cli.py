@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from typing import Any
 
 from rich.console import Console
 from rich.panel import Panel
@@ -92,7 +93,7 @@ def _run_one(
     interactive: bool,
     verbose: bool,
     quiet: bool = False,
-) -> IncidentOutcome:
+) -> tuple[IncidentOutcome, Any, dict]:
     scenario, world, signals = load_scenario(key)
     trace = TraceBus()
     if not quiet:
@@ -116,7 +117,7 @@ def _run_one(
 
     if not quiet:
         _summary(outcome, rt, final, scenario)
-    return outcome
+    return outcome, rt, final
 
 
 def _summary(outcome: IncidentOutcome, rt, final, scenario) -> None:
@@ -312,12 +313,13 @@ def main(argv: list[str] | None = None) -> int:
             console.print(f"[red]unknown scenario {key!r}[/red]")
             return 2
 
-    outcomes: list[tuple[str, IncidentOutcome]] = []
+    runs: list[tuple[str, IncidentOutcome, Any, dict]] = []
     for key in keys:
-        outcome = _run_one(
+        outcome, rt, final = _run_one(
             key, settings, interactive=args.interactive, verbose=args.verbose
         )
-        outcomes.append((key, outcome))
+        runs.append((key, outcome, rt, final))
+    outcomes = [(k, o) for k, o, _, _ in runs]
 
     if len(outcomes) > 1:
         console.print()
@@ -344,6 +346,12 @@ def main(argv: list[str] | None = None) -> int:
         console.print()
         style = "bold green" if passed == len(outcomes) else "bold red"
         console.print(f"  [{style}]{passed}/{len(outcomes)} scenarios matched ground truth[/{style}]")
+
+    if getattr(args, "report", None):
+        from .report import write_report  # noqa: PLC0415 -- optional path
+
+        written = write_report(Path(args.report), runs)
+        console.print(f"\n  [dim]trace report written to[/dim] {written}")
 
     return 0 if all(_grade(o, SCENARIOS_BY_KEY[k])[0] for k, o in outcomes) else 1
 

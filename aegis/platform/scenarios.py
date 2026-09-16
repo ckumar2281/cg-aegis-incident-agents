@@ -723,12 +723,95 @@ SCENARIO_CHRONIC_LATENESS = Scenario(
 
 # --------------------------------------------------------------------------- #
 
+
+
+# --------------------------------------------------------------------------- #
+# S6 -- transient infrastructure failure (autonomous, no humans involved)
+# --------------------------------------------------------------------------- #
+
+
+def _build_transient_timeout(world: World) -> ScenarioSignals:
+    started = world.now - timedelta(minutes=48)
+    world.task_runs.append(
+        TaskRun(
+            run_id="run_support_health_timeout",
+            task_name="TASK_BUILD_SUPPORT_HEALTH",
+            target_asset="MART.SUPPORT_HEALTH",
+            started_at=started,
+            ended_at=started + timedelta(minutes=15),
+            state="FAILED",
+            error_code="000630",
+            error_message="Statement reached its statement or warehouse timeout and was cancelled",
+            attempt=1,
+            rows_written=0,
+            query_id="c4e18b02-9a37-41d6-8f55-2b7c09ae4411",
+        )
+    )
+    world.changes.append(
+        ChangeEvent(
+            "chg_wh_contention",
+            world.now - timedelta(minutes=55),
+            "infra",
+            "COMPUTE_WH queue depth spike",
+            (
+                "Warehouse queuing exceeded 90s for a 7-minute window during the "
+                "nightly batch overlap. Self-cleared."
+            ),
+            author="platform.monitoring",
+            touched_assets=("MART.SUPPORT_HEALTH",),
+        )
+    )
+    _perturb_latest(world, "MART.SUPPORT_HEALTH", freshness_lag_min=760.0, row_factor=0.0)
+
+    alerts = [
+        _alert(world, 1, "task_monitor", "MART.SUPPORT_HEALTH", "task_failed",
+               "TASK_BUILD_SUPPORT_HEALTH failed: statement timeout (000630)", 33,
+               {"error_code": "000630", "attempts": 1}, "warning"),
+        _alert(world, 2, "freshness_monitor", "MART.SUPPORT_HEALTH", "freshness_sla",
+               "MART.SUPPORT_HEALTH is 760 minutes stale (SLA 720)", 20,
+               {"lag_min": 760, "sla_min": 720}, "info"),
+    ]
+    return ScenarioSignals(file=None, validation_failures=[], alerts=alerts, quarantine=None)
+
+
+SCENARIO_TRANSIENT_TIMEOUT = Scenario(
+    key="transient_timeout",
+    title="Warehouse timeout on a tier-3 support mart, self-cleared",
+    narrative=(
+        "The boring case, and the one that proves the autonomy ladder is a real "
+        "decision rather than decoration. A tier-3 asset missed its build because the "
+        "warehouse was briefly queued; the contention has already cleared. Nothing is "
+        "wrong with the data, no code is implicated, and the entire fix is to run it "
+        "again -- an action that is trivially reversible. Waking a Product Owner, a "
+        "Scrum Master, a developer and an engineering manager to approve a retry is "
+        "how an approval process gets ignored. Aegis executes it, verifies recovery, "
+        "and tells the pipeline owner afterwards."
+    ),
+    ground_truth=GroundTruth(
+        root_cause_tag="infrastructure_failure",
+        incident_type=IncidentType.FRESHNESS_BREACH,
+        expected_severity=Severity.SEV4,
+        primary_asset="MART.SUPPORT_HEALTH",
+        expected_code_change_kinds=(),
+        expected_actions=("rerun_task",),
+        forbidden_actions=("rollback_deployment", "restate_table", "release_quarantine",
+                           "backfill_table"),
+        expected_final_state=IncidentState.RESOLVED,
+    ),
+    build=_build_transient_timeout,
+    # Deliberately empty: if any gate were opened, nobody would answer it and the
+    # incident would escalate. Passing this scenario proves no gate was opened.
+    scripted_responses={},
+)
+
+
 ALL_SCENARIOS: tuple[Scenario, ...] = (
     SCENARIO_SCHEMA_DRIFT,
     SCENARIO_JOIN_FANOUT,
     SCENARIO_VENDOR_OUTAGE,
     SCENARIO_NULL_EXPLOSION,
     SCENARIO_CHRONIC_LATENESS,
+    SCENARIO_TRANSIENT_TIMEOUT,
 )
 
 SCENARIOS_BY_KEY: dict[str, Scenario] = {s.key: s for s in ALL_SCENARIOS}

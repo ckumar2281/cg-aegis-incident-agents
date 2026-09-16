@@ -2,10 +2,9 @@
 Tiered disclosure: one verdict, two audiences, one firewall between them.
 
 This is the agent the rest of the system exists to protect. Aegis's governance model
-is that **business approval gates technical disclosure** -- the Product Owner and
-Scrum Master decide whether a fix proceeds while seeing only what the incident means
-for the business, and the developer does not receive the fix detail until that
-decision has been made.
+is that **business approval gates technical disclosure** -- the Product Owner decides
+whether a fix proceeds while seeing only what the incident means for the business, and
+the developer does not receive the fix detail until that decision has been made.
 
 That ordering is unusual and it is the point. It means:
 
@@ -42,8 +41,8 @@ from .base import COMMON_RULES, Agent
 DISCLOSURE_SYSTEM = (
     COMMON_RULES
     + """
-Your remit is to write the BUSINESS brief for a Product Owner and a Scrum Master.
-They are deciding whether an engineering fix should proceed. They are not engineers.
+Your remit is to write the BUSINESS brief for a Product Owner. They are deciding
+whether an engineering fix should proceed. They are not an engineer.
 
 Write for someone who owns the outcome but not the implementation. They need to know
 what broke in terms of what the business does, who is affected, what it costs to act

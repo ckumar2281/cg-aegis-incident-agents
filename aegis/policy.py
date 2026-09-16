@@ -3,18 +3,18 @@ Governance policy: the redaction firewall and the autonomy ladder.
 
 Two independent guards sit between the agents and the outside world.
 
-1. `RedactionPolicy` -- the disclosure firewall. The Product Owner and Scrum Master
-   must be able to make a business decision without being handed code, credentials,
-   internal object names or raw records. This is enforced by machine check, not by
+1. `RedactionPolicy` -- the disclosure firewall. The Product Owner must be able to
+   make a business decision without being handed code, credentials, internal object
+   names or raw records. This is enforced by machine check, not by
    asking a model nicely: a business artifact that trips any rule is rejected, the
    findings are handed back to the disclosure agent for one repair attempt, and if it
    fails again the incident escalates to a human rather than over-disclosing.
 
-2. `AutonomyLadder` -- what the agents may do unsupervised. Aegis's default is that
-   nothing touching data or code proceeds without both human gates. The only
-   exception is a SEV4 incident whose entire remediation is reversible and carries no
-   code change, which is the "restart the failed task" case that should not wake
-   anybody at 3am.
+2. `AutonomyLadder` -- what the agents may do unsupervised. The default posture is
+   closed: both gates, always. Two narrow exceptions earn autonomy -- a SEV4 whose
+   remediation is entirely reversible with no code change (the "re-run the failed
+   task" case that should not wake anyone at 3am), and a plan whose only code changes
+   are cosmetic. Anything that adds, removes or alters behaviour goes to the gates.
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 
 from .contracts import (
     BusinessBrief,
+    ChangeMagnitude,
     RemediationProposal,
     RiskTier,
     Severity,
@@ -63,13 +64,20 @@ BUSINESS_TIER_RULES: tuple[RedactionRule, ...] = (
     ),
     RedactionRule(
         "diff",
-        _rx(r"^(\+\+\+|---|@@|\+\s|\-\s)\S|^diff --git"),
+        # Unified-diff headers and hunk markers. Deliberately NOT matching bare
+        # "+ " / "- " line prefixes: those are markdown bullets, and a rule that
+        # rejects every bulleted list would be turned off within a week.
+        _rx(r"^(---|\+\+\+)\s+\S|^@@[\s\-+0-9,]*@@|^diff --git|^index [0-9a-f]{7,}"),
         "Patch/diff content is technical-tier only",
     ),
     RedactionRule(
         "qualified_object",
-        _rx(r"\b[A-Z][A-Z0-9_]{2,}\.[A-Z][A-Z0-9_]{2,}\.[A-Z][A-Z0-9_]{2,}\b"),
-        "Fully-qualified database object names are technical-tier only",
+        # Two-part (SCHEMA.TABLE) as well as three-part (DB.SCHEMA.TABLE). The
+        # original rule required three segments, which meant it never fired on this
+        # warehouse at all -- every object here is SCHEMA.TABLE. A control that
+        # cannot match the thing it guards against is decoration.
+        _rx(r"\b[A-Z][A-Z0-9_]{2,}\.[A-Z][A-Z0-9_]{2,}(\.[A-Z][A-Z0-9_]{2,})?\b"),
+        "Database object names are technical-tier only",
     ),
     RedactionRule(
         "uri",
@@ -228,6 +236,12 @@ class AutonomyLadder:
         )
     )
 
+    #: Code changes at or above this magnitude need a business decision. Cosmetic
+    #: changes -- formatting, comments, naming -- do not: nobody's judgement is
+    #: improved by being asked to approve whitespace, and asking anyway is how an
+    #: approval process trains people to click through without reading.
+    gated_change_magnitude: ChangeMagnitude = ChangeMagnitude.ADDITIVE
+
     def evaluate(
         self, severity: Severity, proposal: RemediationProposal
     ) -> GateRequirement:
@@ -240,9 +254,28 @@ class AutonomyLadder:
                 True,
                 f"Plan contains always-gated action(s): {', '.join(sorted(set(gated_actions)))}.",
             )
-        if proposal.code_changes:
+
+        significant = [
+            c
+            for c in proposal.code_changes
+            if c.magnitude.rank >= self.gated_change_magnitude.rank
+        ]
+        if significant:
+            kinds = ", ".join(sorted({c.magnitude.value for c in significant}))
             return GateRequirement(
-                True, True, "Plan changes code, which always requires both gates."
+                True,
+                True,
+                f"Plan makes {len(significant)} {kinds} code change(s), which alter behaviour "
+                "and require both gates.",
+            )
+        if proposal.code_changes:
+            # Reached only when every change is cosmetic.
+            return GateRequirement(
+                False,
+                False,
+                f"Plan changes {len(proposal.code_changes)} file(s), all cosmetic "
+                "(formatting or comments, no behaviour change). Proceeding without "
+                "approval and opening a pull request for normal review.",
             )
         if proposal.requires_quarantine_release:
             return GateRequirement(

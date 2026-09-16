@@ -78,24 +78,74 @@ load_dotenv()
 
 PRICING_AS_OF = "2026-09"
 
+#: Keyed on model *family*, not on full inference-profile IDs.
+#:
+#: The same model is reachable as `us.`, `eu.`, `apac.` or `global.` depending on
+#: which cross-region profile your account has, and the date suffix changes between
+#: releases. Keying on the full ID means a new profile prefix silently prices at zero
+#: and the budget governor stops governing -- which is the one failure mode a cost
+#: control must not have. Matching on family is looser but fails safe.
 MODEL_PRICES: dict[str, tuple[float, float]] = {
-    # model_id: (usd_per_M_input, usd_per_M_output)
-    "us.anthropic.claude-haiku-4-5-20251001-v1:0": (1.00, 5.00),
-    "us.anthropic.claude-sonnet-5-20260514-v1:0": (2.00, 10.00),
-    "us.anthropic.claude-sonnet-4-6-20260101-v1:0": (3.00, 15.00),
-    "us.amazon.nova-micro-v1:0": (0.035, 0.14),
-    "us.amazon.nova-lite-v1:0": (0.06, 0.24),
-    "us.amazon.nova-pro-v1:0": (0.80, 3.20),
+    # family fragment: (usd_per_M_input, usd_per_M_output)
+    "claude-opus-4": (15.00, 75.00),
+    "claude-sonnet-4-6": (3.00, 15.00),
+    "claude-sonnet-4-5": (3.00, 15.00),
+    "claude-sonnet-5": (2.00, 10.00),
+    "claude-haiku-4-5": (1.00, 5.00),
+    "claude-3-5-haiku": (0.80, 4.00),
+    "nova-micro": (0.035, 0.14),
+    "nova-lite": (0.06, 0.24),
+    "nova-pro": (0.80, 3.20),
     "heuristic": (0.0, 0.0),
 }
 
-# Cached input tokens bill at roughly 10% of the base input rate.
+#: Charged when a model ID matches nothing above. Deliberately the most expensive
+#: rate in the table: an unknown model should make the governor *more* cautious,
+#: never less. Over-estimating costs you an early degrade; under-estimating costs
+#: you a surprise bill.
+UNKNOWN_MODEL_PRICE = (15.00, 75.00)
+
+#: Cached input tokens bill at roughly 10% of the base input rate.
 CACHE_READ_DISCOUNT = 0.10
+
+#: Cross-region inference profile prefixes, stripped before family matching.
+_PROFILE_PREFIXES = ("us-gov.", "global.", "apac.", "us.", "eu.", "jp.", "au.")
+
+
+def resolve_price(model_id: str) -> tuple[tuple[float, float], bool]:
+    """
+    Return ((input_rate, output_rate), matched) for a model ID.
+
+    `matched` is False when we fell back to the pessimistic default, which callers
+    surface rather than swallow -- a silently mispriced model is how a cost control
+    stops being one.
+    """
+    if not model_id:
+        return UNKNOWN_MODEL_PRICE, False
+
+    needle = model_id.lower()
+    for prefix in _PROFILE_PREFIXES:
+        if needle.startswith(prefix):
+            needle = needle[len(prefix) :]
+            break
+
+    if needle in MODEL_PRICES:
+        return MODEL_PRICES[needle], True
+
+    # Longest family fragment wins, so claude-sonnet-4-5 is not matched by a
+    # hypothetical shorter "claude-sonnet" entry.
+    best: tuple[str, tuple[float, float]] | None = None
+    for family, rates in MODEL_PRICES.items():
+        if family in needle and (best is None or len(family) > len(best[0])):
+            best = (family, rates)
+    if best:
+        return best[1], True
+    return UNKNOWN_MODEL_PRICE, False
 
 
 def price_call(model_id: str, input_tokens: int, output_tokens: int, cached_input: int = 0) -> float:
     """Return the USD cost of a single model call."""
-    in_rate, out_rate = MODEL_PRICES.get(model_id, (0.0, 0.0))
+    (in_rate, out_rate), _ = resolve_price(model_id)
     fresh_input = max(0, input_tokens - cached_input)
     cost = (fresh_input / 1_000_000) * in_rate
     cost += (cached_input / 1_000_000) * in_rate * CACHE_READ_DISCOUNT
@@ -239,10 +289,15 @@ class ApprovalPolicy:
 
     Business gate first. Its approval is what *unlocks disclosure* of the technical
     packet -- the developer does not receive the fix detail until the Product Owner
-    and Scrum Master have signed off on the problem in business terms.
+    has signed off on the problem in business terms.
     """
 
-    business_roles: tuple[HumanRole, ...] = (HumanRole.PRODUCT_OWNER, HumanRole.SCRUM_MASTER)
+    #: One accountable business decision-maker, not a committee. A second business
+    #: approver added ceremony without adding judgement: both were shown the same
+    #: brief and the second had no information the first lacked. The technical gate
+    #: keeps two roles because the developer and the engineering manager genuinely
+    #: assess different things -- correctness and acceptable risk.
+    business_roles: tuple[HumanRole, ...] = (HumanRole.PRODUCT_OWNER,)
     technical_roles: tuple[HumanRole, ...] = (HumanRole.DEVELOPER, HumanRole.ENG_MANAGER)
     token_ttl_minutes: int = int(_env("AEGIS_TOKEN_TTL_MIN", "1440"))
     # A timeout never means yes. It escalates to the pipeline owner.

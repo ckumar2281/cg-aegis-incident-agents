@@ -5,8 +5,8 @@ This is the part of Aegis that makes it a governance system rather than an autom
 script. Two gates run in sequence, and the first one controls what the second one is
 even allowed to see.
 
-    GATE 1 -- BUSINESS     Product Owner + Scrum Master
-                           receive the business brief ONLY
+    GATE 1 -- BUSINESS     Product Owner
+                           receives the business brief ONLY
                            approve -> unlocks Gate 2
                            reject  -> file stays quarantined, ticket raised
                            defer   -> future-issues backlog
@@ -17,8 +17,11 @@ even allowed to see.
 
 Design decisions worth defending:
 
-**A gate needs every required role.** Not a majority, not the first responder. Two
-people are asked because two perspectives are wanted, so one approval is not consent.
+**A gate needs every required role.** Not a majority, not the first responder. Where
+two roles are required they are asked because two different judgements are wanted --
+the developer assesses correctness, the engineering manager assesses acceptable risk --
+so one approval is not consent. The business gate has a single approver by design: a
+second business reviewer saw the same brief and added ceremony rather than judgement.
 
 **Any single reject fails the gate immediately.** The remaining approvers are not
 chased for a decision that cannot change the outcome.
@@ -147,9 +150,9 @@ class ScriptedResponder(Responder):
     """
     Plays a pre-recorded set of verdicts. Used by the demo and the eval harness.
 
-    Keyed on (gate, role), so a scenario can encode "the PO rejects but the Scrum
-    Master approves" and the gate logic is exercised exactly as it would be with real
-    people. A missing key means nobody answered, which exercises the timeout path.
+    Keyed on (gate, role), so a scenario can encode "the PO rejects" or "the developer
+    approves but the engineering manager does not" and the gate logic is exercised
+    exactly as it would be with real people. A missing key means nobody answered, which exercises the timeout path.
     """
 
     def __init__(self, script: dict[tuple[str, HumanRole], GateVerdict]) -> None:
@@ -550,7 +553,7 @@ Incident {packet.incident_id} -- {packet.title}
 Severity: {packet.severity.value}   Confidence: {tech.confidence:.0%}
 
 The business has approved this fix. It is now released to engineering for technical
-review. Approved by: the Product Owner and Scrum Master.
+review. Approved by: the Product Owner.
 
 ROOT CAUSE
 {tech.root_cause}

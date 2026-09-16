@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 
 from ..contracts import (
     AgentRole,
+    ChangeMagnitude,
     CodeChange,
     IncidentPacket,
     RemediationProposal,
@@ -216,6 +217,7 @@ class RemediationPlanner(Agent):
                     )
                 ),
                 tests_added=[f"contract_columns_present[{primary}]"],
+                magnitude=ChangeMagnitude.ADDITIVE,
             ),
             CodeChange(
                 path=model_path,
@@ -237,6 +239,7 @@ class RemediationPlanner(Agent):
                     "     created_at\n"
                 ),
                 tests_added=[f"not_null[{primary}.{rename['from']}]"],
+                magnitude=ChangeMagnitude.MODIFYING,
             ),
         ]
         return RemediationProposal(
@@ -339,6 +342,7 @@ class RemediationPlanner(Agent):
                     f"unique[{primary}.order_id]",
                     f"row_count_within_20pct_of_median[{primary}]",
                 ],
+                magnitude=ChangeMagnitude.MODIFYING,
             )
         ]
         return RemediationProposal(
@@ -406,6 +410,7 @@ class RemediationPlanner(Agent):
                     "+  alert: notify_pipeline_owner\n"
                 ),
                 tests_added=["carry_forward_flag_set_when_source_unavailable"],
+                magnitude=ChangeMagnitude.ADDITIVE,
             )
         ]
         return RemediationProposal(
@@ -458,6 +463,7 @@ class RemediationPlanner(Agent):
                     "+  escalate_to: pipeline_owner\n"
                 ),
                 tests_added=["extract_succeeds_within_late_arrival_window"],
+                magnitude=ChangeMagnitude.ADDITIVE,
             )
         ]
         return RemediationProposal(
@@ -517,6 +523,7 @@ class RemediationPlanner(Agent):
                     "+      on_expiry: restore_original_threshold\n"
                 ),
                 tests_added=["exception_expires_and_rule_rearms"],
+                magnitude=ChangeMagnitude.ADDITIVE,
             )
         ]
         return RemediationProposal(
@@ -537,6 +544,59 @@ class RemediationPlanner(Agent):
                 "the defaults would silently win.",
                 "Do not release the file from quarantine without an explicit business decision.",
                 "Do not permanently relax the rule; any exception must carry an expiry.",
+            ],
+        )
+
+    def _plan_infrastructure_failure(self, packet, verdict) -> RemediationProposal:
+        """
+        The boring one, and the only playbook that can run unattended.
+
+        Every step is reversible, nothing is mutated, no code changes. That is exactly
+        what earns it autonomy from the ladder -- and it is deliberately narrow: the
+        moment a fix needs a backfill, a restate, or a line of code, humans are back in
+        the loop.
+        """
+        primary = packet.primary_asset
+        return RemediationProposal(
+            incident_id=packet.incident_id,
+            objective=f"Rebuild {primary} now the execution environment has recovered.",
+            strategy=(
+                "Nothing is wrong with the data or the code -- the build was cancelled "
+                "by the warehouse. Re-run it and verify freshness. If it fails again, "
+                "that changes the diagnosis from transient to systemic and a human "
+                "should look at it."
+            ),
+            data_steps=[
+                RemediationStep(
+                    step_id="S1",
+                    action="rerun_task",
+                    params={"asset": primary},
+                    intent="Re-run the cancelled build and rebuild anything downstream of it.",
+                    risk_tier=RiskTier.T1_REVERSIBLE,
+                    preconditions=["Execution environment no longer contended"],
+                    verification={"check": "downstream_fresh", "asset": primary},
+                ),
+                RemediationStep(
+                    step_id="S2",
+                    action="notify_pipeline_owner",
+                    params={
+                        "owner": packet.pipeline_owner,
+                        "incident_id": packet.incident_id,
+                        "asset": primary,
+                    },
+                    intent="Tell the owning team it happened and that it is already fixed.",
+                    risk_tier=RiskTier.T1_REVERSIBLE,
+                    preconditions=["S1 succeeded"],
+                    verification={"check": "owner_notified"},
+                ),
+            ],
+            code_changes=[],
+            expected_recovery_minutes=12,
+            do_not_do=[
+                "Do not restate or backfill -- the data was never written incorrectly, "
+                "it was simply not written yet.",
+                "Do not resize the warehouse reactively; if this recurs, the fix is a "
+                "scheduling change, not more compute.",
             ],
         )
 

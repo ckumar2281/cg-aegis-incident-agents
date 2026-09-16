@@ -1,0 +1,482 @@
+# Aegis — Project Record
+
+**Project:** Agentic DataPOC — "Aegis", governed agentic incident management for data pipelines
+**Owner:** Chaitanya
+**Repo:** `~/projects/aegis`
+**Last updated:** 16 September 2026
+**Deliverable due:** end of day Thursday 17 September · **Review:** Friday 18 September
+
+> Living document. Covers the brief, design decisions, AWS setup, build progress, and
+> every non-obvious problem found along the way.
+
+---
+
+## 1. The task
+
+Build an **Agentic Incident Management solution**. Constraints set by the lead:
+
+- **Architecture** must be multi-agent — specialised agents for triage, analysis and resolution — not a single monolithic call.
+- **Evaluation** is on technical quality, effective agent hand-off logic, and innovation.
+- **Tech stack** is our choice.
+
+### Chosen problem statement
+
+**Data pipeline / ETL incident management** — failed loads, schema drift, freshness SLA
+breaches, and bad-data propagation across a lineage-connected warehouse.
+
+### The governance model (Chaitanya's design)
+
+The distinguishing idea: **business approval gates technical disclosure**.
+
+```
+Source → Ingestion → Validation → Failure/Quarantine → Agent → Diagnosis
+  → Recommended Action → Human Approval (tiered) → Remediation/Rerun
+  → Audit & Notification
+```
+
+| Gate | Approvers | Sees | Outcomes |
+|---|---|---|---|
+| **1. Business** | Product Owner + Scrum Master | Business brief only — no code, no object names, no errors | Approve → unlocks Gate 2 · Reject → quarantine + ticket · Defer → future-issues backlog |
+| **2. Technical** | Developer + Engineering Manager | Full technical fix packet: root cause, diffs, rollback | Approve → implement, open PR, reprocess data |
+
+The developer never receives the fix detail until the business signs off on the problem
+in business terms. Three terminal states: **resolved**, **rejected and quarantined**
+(ticket raised, pipeline owner notified), or **deferred to backlog**.
+
+---
+
+## 2. Stack decisions
+
+| Layer | Choice | Why |
+|---|---|---|
+| Orchestration | **LangGraph** supervisor + specialists | Explicit graph, conditional edges, confidence-gated loops. Matches AWS's own multi-agent SRE reference architecture |
+| Reasoning | **Amazon Bedrock** (Claude) via boto3 Converse | Required by the brief |
+| Data platform | **Snowflake** | Real incident signals: `TASK_HISTORY`, `COPY_HISTORY`, Data Metric Functions, Horizon lineage |
+| Storage | **S3** raw + quarantine zones | File landing, fail-safe quarantine |
+| Contracts | **Pydantic v2** | Typed hand-off contracts between agents |
+| Deployment | Runs **locally** against real services | AgentCore Runtime documented as the production path, not deployed for the POC |
+
+---
+
+## 3. AWS Bedrock setup — completed ✅
+
+### 3.1 Region
+
+**`us-east-1`.** Note: model access was originally enabled while the console was on
+`us-east-2` (Ohio), but the preflight resolved `us-east-1` from the local AWS config
+and **worked** — because the Anthropic use-case form is granted **per account**, not
+per region. Everything is now standardised on `us-east-1`.
+
+### 3.2 Model access
+
+The standalone "Model access" console page **no longer exists**. Current flow:
+
+1. Bedrock console → **Discover → Model catalog**
+2. Filter **Providers → Anthropic** → open **Claude Haiku 4.5**
+3. Yellow banner → **Submit use case details**
+4. Complete the form — **access granted immediately**, no approval queue
+
+Submitted once for the whole account; unlocked all Anthropic models.
+
+Form values used — intended users: **Internal only**. Use case: *"Internal proof-of-concept
+for automated data pipeline incident management. A multi-agent system triages data quality
+alerts, correlates them using warehouse lineage metadata, performs root-cause analysis, and
+drafts remediation plans that are reviewed and approved by humans before any action is taken.
+Internal engineering use only; no customer-facing deployment and no end-user access to the models."*
+
+### 3.3 Authentication
+
+**Bedrock API key (long-term, 30-day expiry)**, created at **Discover → API keys**.
+
+Chosen over an IAM user: AWS provisions the backing permissions automatically, the key
+is scoped to Bedrock only, and it self-expires. Short-term keys were rejected — they
+expire in ~12 hours and would be dead before Friday.
+
+**"Permissions to access Amazon Bedrock Marketplace models" left unchecked** —
+Marketplace models run on dedicated hourly-billed endpoints; Claude is serverless.
+
+**The key lives in `~/.zshrc`, not in the project folder.** Deliberate: `~/projects` is
+connected to the Claude session, so a key in `.env` would be within its read scope.
+A real environment variable beats the `.env` file, so behaviour is identical.
+
+```bash
+export AWS_BEARER_TOKEN_BEDROCK='...'   # in ~/.zshrc
+```
+
+### 3.4 Models discovered by the preflight
+
+`scripts/check_bedrock.py` reads the account rather than trusting hardcoded IDs:
+
+```
+AEGIS_CHEAP_MODEL=global.anthropic.claude-haiku-4-5-20251001-v1:0
+AEGIS_STRONG_MODEL=us.anthropic.claude-sonnet-4-6
+```
+
+**No Sonnet 5 in this account**, so the strong tier is Sonnet 4.6 at $3/$15 rather than
+$2/$10. Note the `global.` prefix on Haiku — a different cross-region inference profile
+than the `us.` one assumed. This broke the price table and is why pricing now matches
+on model *family* rather than full profile ID (see §6, bug 0).
+
+### 3.5 Local environment
+
+```bash
+cd ~/projects/aegis
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+python scripts/check_bedrock.py
+```
+
+**Known issue, not remediated:** an early `pip install --user boto3` upgraded system
+`botocore` 1.34.69 → 1.43.95, breaking a pin held by `aiobotocore 2.12.3`
+(`botocore<1.34.70`). Warning only; boto3 works. If it bites another project:
+
+```bash
+deactivate
+python3 -m pip uninstall -y boto3 botocore s3transfer
+python3 -m pip install --user 'botocore<1.34.70'
+```
+
+The venv keeps its own copies and is unaffected. **Lesson:** use a venv from the start.
+
+---
+
+## 4. Cost position
+
+| Item | Cost |
+|---|---|
+| Enabling model access | **$0** — no subscription, no idle charge |
+| IAM, API keys, budget alarms | **$0** |
+| **Bedrock inference** | **$0.132 per incident run** (measured, on the real model pair) |
+| Snowflake | **$0** — 30-day trial, $400 credits |
+| S3, SES, Lambda, API Gateway | **~$0** at demo volume |
+| AgentCore Runtime | **$0** — running locally |
+
+**Realistic total for the POC: ~$6.** All development, tests and the eval suite run on
+the deterministic heuristic backend at **$0**; Bedrock is called only on real demo runs.
+
+Claude Max is a **separate meter** — it covers claude.ai and this build conversation.
+It does not offset Bedrock, which bills the AWS account card monthly in arrears.
+
+### Idle-cost traps — deliberately avoided
+
+| Trap | Idle cost | Status |
+|---|---|---|
+| **Knowledge Bases** (OpenSearch Serverless default) | 2 OCU min @ $0.24/hr ≈ **$345/mo at zero queries** | ❌ Not used. Incident memory is an in-process similarity function |
+| **Provisioned Throughput** | Hourly commitment regardless of use | ❌ Not purchased |
+| **AgentCore Runtime sessions** | Memory billed per second incl. idle | ❌ Not deployed |
+| **Marketplace model deployments** | Hourly endpoint charges | ❌ Permission not granted |
+| **Snowflake warehouse left running** | ~1 credit/hour | ⚠️ Use `AUTO_SUSPEND = 60` |
+
+### Guardrails
+
+- **AWS budget alarm** — notifies, does **not** cap. AWS has no hard spend limit. ⬜ *still to set up*
+- **Code budget governor** — $0.50 hard ceiling per incident, then degrades to the free backend. ✅
+- **Key expiry** — 30 days; nothing runs after that. ✅
+
+---
+
+## 5. Architecture as built
+
+### Agents (nine)
+
+| Agent | Owns |
+|---|---|
+| **Triage** | Correlate a noisy alert stream into one scoped, classified incident + a work plan |
+| **Lineage analyst** | Who is hurt — downstream closure, consumers, SLAs, business processes |
+| **Pipeline forensics** | What the orchestrator did — runs, loads, errors, retries |
+| **Quality forensics** | How the data deviates — counts, nulls, duplicates, schema diff |
+| **Change correlator** | What changed and when — deploys, config, vendor notices |
+| **RCA synthesiser** | Score competing hypotheses, decide confidence, gate the outcome |
+| **Remediation planner** | Risk-tiered data steps + a code fix for the PR |
+| **Disclosure officer** | One verdict → two audiences, redaction machine-enforced |
+| **Executor / verifier** | Act, verify independently, roll back on failure, open the PR |
+
+The four specialists run **in parallel** and deliberately overlap only a little. When
+two of them reach the same conclusion from different data, that agreement carries
+weight — a single call cannot corroborate itself.
+
+### What makes the hand-offs work
+
+- **Directives, not context dumps.** Triage issues each specialist a numbered question it is accountable for answering.
+- **Admitting ignorance is first-class.** `unresolved_directives` and `follow_up_requests` are in the schema; an honest gap triggers another round.
+- **The confidence gate.** Hypotheses score arithmetically: best prior + agreement bonus for independent corroboration + supporting evidence − refuting evidence **at double weight**.
+- **The model can doubt more easily than assert.** It may lower computed confidence by 0.15 but raise it by at most 0.05.
+- **Provenance everywhere.** Every claim carries its tool calls; every transition is appended to a SHA-256 hash chain.
+
+### Graph topology
+
+```
+START → quarantine → triage ─┬→ lineage    ─┐
+                             ├→ pipeline   ─┤
+                             ├→ quality    ─┼→ rca ─┬→ (dig deeper, round 2) ↺
+                             └→ change     ─┘       ├→ escalate → END
+                                                    └→ plan → disclose
+                                                                 ↓
+                                                          business_gate
+                                                 ┌────────────┼────────────┐
+                                              reject        defer      approve
+                                                 ↓            ↓            ↓
+                                              ticket      backlog   technical_gate
+                                                 ↓            ↓       ┌────┴────┐
+                                                END          END   reject   approve
+                                                                      ↓        ↓
+                                                                   ticket   execute → close
+```
+
+---
+
+## 6. Problems found and fixed
+
+Recorded because they are exactly what a reviewer will probe, and the fixes are more
+interesting than the features.
+
+### Bug 0 — the price table missed the real models
+
+Keyed on full inference-profile IDs (`us.anthropic.claude-sonnet-5-...`). The account
+actually has `global.anthropic.claude-haiku-4-5` and `us.anthropic.claude-sonnet-4-6`,
+which matched nothing and therefore priced at **$0** — meaning the budget governor
+would never have fired.
+
+**Fix:** match on model *family*, stripping region prefixes. Unknown models now price
+at the **most expensive** rate in the table, so an uncatalogued model makes the
+governor more cautious, never blind.
+
+### Bug 1 — confidence was pinned at 100%
+
+Posterior was each hypothesis's share of total weight. Refutation is aggressive enough
+to zero out rivals, so the last one standing scored 1.0 regardless of how much evidence
+actually backed it. An investigation with one weak lead reported certainty.
+
+**Fix:** confidence is now two factors multiplied — `share` (dominance over rivals) ×
+`mass` (is there enough evidence to be confident at all, saturating so it approaches
+but never reaches 1). Confidence now spans 54–84% across the suite.
+
+### Bug 2 — severity treated reachability as materiality
+
+In a warehouse of any size almost everything eventually reaches the executive
+dashboard, so unweighted blast radius made **every** incident a SEV1. A segment field
+four joins away from a KPI tile scored the same as revenue being wrong.
+
+**Fix:** blast radius is distance-weighted — `1/(1 + 0.45·(depth−1))`, so depth 1
+counts 1.00 and depth 5 counts 0.36. Applied to tier-1 assets, consumer surfaces *and*
+financial proximity. Leaving consumer surfaces unweighted was on its own enough to push
+a mid-severity incident into SEV1, because four distant dashboards saturated the cap
+three nearby ones were meant to.
+
+### Bug 3 — change correlation ignored causal direction
+
+Two routine deploys touching assets **downstream** of the fault were competing as
+explanations. A change to a mart cannot cause a null spike in the staging table that
+feeds it — data flows one way.
+
+**Fix:** only the failing asset and its upstreams are in causal scope. Downstream
+changes are demoted (×0.25) rather than dropped, since they can still be a coincidental
+co-factor worth a human noticing.
+
+### Bug 5 — the autonomy ladder was decorative
+
+The rule deciding whether humans are needed was implemented, called, written to the
+trace and appended to the audit chain — and then **ignored**. The graph had
+`add_edge("plan", "disclose")`, unconditional, so every incident went to the gates
+regardless of what the ladder concluded. Autonomous execution could never have
+happened.
+
+It looked correct in the trace, which is what made it easy to miss: the log line said
+*"executing autonomously"* and then the incident went and asked four people anyway.
+
+**Fix:** the decision is now carried in graph state and routes a conditional edge to
+either `disclose` (gated) or `autonomous` (execute, verify, notify after the fact). A
+sixth scenario, `transient_timeout`, exercises the autonomous path — and it passes only
+if no gate opens, because its scripted responses are deliberately empty. If a gate were
+opened, nobody would answer and the incident would escalate.
+
+### Bug 6 — no evidence for an ordinary task failure
+
+`PipelineForensics` had branches for load failures and vendor errors, but not for a
+plain task failure with an ordinary error code. So a warehouse timeout — probably the
+single commonest incident in any real platform — produced **zero** findings, and the
+investigation stalled at 46% confidence with nothing to say.
+
+**Fix:** a branch for generic task failures that distinguishes transient
+execution-environment errors (timeout, cancelled, resource, queued, throttled) from
+logic errors, and proposes `infrastructure_failure` with refutation of the data-related
+causes. Also added the matching playbook, which had been falling through to the generic
+"contain and hand over" default that never actually re-ran anything.
+
+### Bug 4 — temporal correlation decayed to zero at 24 hours
+
+Linear decay meant a change three days old was scored as impossible. The flagship
+scenario's Stripe vendor notice (posted 5 days before the change landed) was missed
+entirely, so the change correlator contributed **nothing** to the headline incident.
+
+**Fix:** exponential decay with a 72-hour half-life, and a 7-day window. Vendor notices
+arrive well ahead of the change taking effect; schema migrations run over weekends; a
+deploy only bites when the nightly batch next runs.
+
+---
+
+## 7. Current results
+
+```
+scenario             outcome                 sev    conf   path         approvals
+schema_drift         resolved                SEV1    84%   gated            4
+join_fanout          resolved                SEV3    64%   gated            4
+vendor_outage        resolved                SEV1    81%   gated            4
+null_explosion       rejected quarantined    SEV2    54%   gated            1
+chronic_lateness     deferred backlog        SEV4    74%   gated            2
+transient_timeout    resolved                SEV4    58%   AUTONOMOUS       0
+
+6/6 scenarios matched ground truth
+```
+
+All four paths exercised: resolved-with-approval, rejected-and-ticketed,
+deferred-to-backlog, and resolved-autonomously.
+
+Two details worth noticing in that table:
+
+- **`transient_timeout` sent zero approval emails.** The autonomy ladder decided no
+  human was needed and the graph honoured it. Its scripted responses are empty, so if
+  any gate *had* opened the incident would have escalated instead of resolving — the
+  test passes only because no gate opened.
+- **`null_explosion` sent one, not two.** The Product Owner rejected, so the Scrum
+  Master was never asked. Nobody is chased for a decision that cannot change the outcome.
+
+The confidence gate does real work: three scenarios proceed on round one, three loop
+for more evidence before deciding.
+
+### The five scenarios
+
+| Key | Tests | Ends as |
+|---|---|---|
+| `schema_drift` | Full happy path — Stripe renames a column mid-close, both gates approve | Resolved |
+| `join_fanout` | Silent corruption — nothing failed, the numbers are just wrong | Resolved |
+| `vendor_outage` | Alert-storm de-duplication — 10 alerts across 9 assets → 1 incident | Resolved |
+| `null_explosion` | **Reject path** — the technically correct fix is the wrong business call | Quarantined + ticketed |
+| `chronic_lateness` | **Defer path** — third occurrence in 30 days, reframed as backlog | Deferred |
+| `transient_timeout` | **Autonomous path** — SEV4, reversible, no code: fixed without waking anyone | Resolved, no gates |
+
+---
+
+## 8. Running it
+
+```bash
+cd ~/projects/aegis
+source .venv/bin/activate
+
+python -m aegis.cli list                      # the scenarios
+python -m aegis.cli run schema_drift          # one incident, live trace
+python -m aegis.cli run --all                 # the whole suite
+python -m aegis.cli run null_explosion -i     # you play the approvers  <-- Friday demo
+python -m aegis.cli run --all --bedrock       # real Claude models (~$0.66)
+python -m aegis.cli graph                     # the graph as Mermaid
+```
+
+Default is the heuristic backend: deterministic, free, no credentials. `--bedrock` or
+`AEGIS_MODEL_BACKEND=bedrock` in `.env` switches to real models.
+
+---
+
+## 9. Build status
+
+### Complete ✅
+
+| Component | File |
+|---|---|
+| Typed hand-off contracts | `aegis/contracts.py` |
+| Config, cost governor, `.env` loading | `aegis/config.py` |
+| Redaction firewall, autonomy ladder, severity scoring | `aegis/policy.py` |
+| Hash-chained audit trail + trace bus | `aegis/audit.py` |
+| Bedrock / heuristic reasoning layer | `aegis/reasoning.py` |
+| Simulated Snowflake warehouse (33 assets) | `aegis/platform/world.py` |
+| Five scenarios with ground truth | `aegis/platform/scenarios.py` |
+| Platform client + action API | `aegis/platform/client.py` |
+| Provenance-recording tool belt | `aegis/tools.py` |
+| Incident memory / recurrence detection | `aegis/memory.py` |
+| Nine agents | `aegis/agents/*.py` |
+| Two-gate approval chain, signed tokens | `aegis/approvals.py` |
+| Jira / ServiceNow / GitHub / SES adapters + mocks | `aegis/integrations.py` |
+| LangGraph orchestration | `aegis/graph.py` |
+| CLI with live trace | `aegis/cli.py` |
+| Bedrock preflight | `scripts/check_bedrock.py` |
+
+~10,000 lines. Committed to git locally.
+
+### Remaining ⬜
+
+- Eval harness scoring against ground truth (`evals/harness.py`)
+- Unit tests, especially asserting the redaction firewall holds
+- HTML trace report
+- Architecture writeup for Friday
+- AgentCore Runtime deployment notes
+- GitHub push
+
+---
+
+## 10. Open items
+
+### Needs a decision
+
+1. **Repo name** — currently `aegis`.
+2. **Approver identities for Friday.** Suggested: Gmail plus-addressing
+   (`chaitan.gk+po@`, `+sm@`, `+dev@`, `+em@`) — four distinct approvers, one inbox,
+   makes the tiered-disclosure effect visible live.
+
+### Service setup
+
+| Service | Needed for | Status |
+|---|---|---|
+| Bedrock | Agent reasoning | ✅ verified end to end |
+| AWS budget alarm | Spend early-warning | ⬜ recommended, $10 threshold |
+| Snowflake | Real platform data | ⬜ trial not started |
+| GitHub | PR creation demo | ⬜ repo + fine-grained PAT (`pull_requests: write`) |
+| SES | Approval emails | ⬜ verify one sender address |
+| Jira | Ticket on reject path | ⬜ optional — mock demos the same flow |
+
+---
+
+## 11. Reference
+
+- [Bedrock console](https://console.aws.amazon.com/bedrock/) · [Bedrock pricing](https://aws.amazon.com/bedrock/pricing/)
+- [Inference profile prerequisites and IAM](https://docs.aws.amazon.com/bedrock/latest/userguide/inference-profiles-prereq.html)
+- [Multi-agent SRE reference architecture on AgentCore](https://aws.amazon.com/blogs/machine-learning/build-multi-agent-site-reliability-engineering-assistants-with-amazon-bedrock-agentcore/)
+- [Snowflake trial signup](https://signup.snowflake.com/)
+
+### Appendix — production IAM policy (not used; the API key made it unnecessary)
+
+Cross-region inference profiles need permission on **both** the inference-profile ARN
+and the underlying foundation-model ARN. A policy naming only the profile fails with a
+misleading `AccessDenied`.
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "InvokeAndDiscover",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock:InvokeModel",
+        "bedrock:InvokeModelWithResponseStream",
+        "bedrock:Converse",
+        "bedrock:ConverseStream",
+        "bedrock:ListInferenceProfiles",
+        "bedrock:GetInferenceProfile",
+        "bedrock:ListFoundationModels"
+      ],
+      "Resource": [
+        "arn:aws:bedrock:*:*:inference-profile/*",
+        "arn:aws:bedrock:*::foundation-model/*"
+      ]
+    },
+    {
+      "Sid": "MarketplaceSubscribe",
+      "Effect": "Allow",
+      "Action": ["aws-marketplace:ViewSubscriptions", "aws-marketplace:Subscribe"],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": { "aws:CalledViaLast": "bedrock.amazonaws.com" }
+      }
+    }
+  ]
+}
+```

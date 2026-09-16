@@ -378,8 +378,8 @@ class ExecutorVerifier(Agent):
 ---
 
 This pull request was prepared by Aegis after the incident passed both approval gates:
-the Product Owner and Scrum Master approved the business case, and the developer and
-engineering manager approved the technical fix. It is **not** auto-merged — normal
+the Product Owner approved the business case, and the developer and engineering
+manager approved the technical fix. It is **not** auto-merged — normal
 review applies.
 
 Data remediation ran separately; this PR covers the code change that stops the

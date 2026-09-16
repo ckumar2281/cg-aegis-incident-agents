@@ -459,6 +459,62 @@ class PipelineForensics(_Specialist):
                 )
             )
 
+        # A plain task failure with an ordinary error code. Easy to overlook while
+        # writing the interesting branches, and then the commonest incident in any
+        # real platform -- a timeout, a resource limit, a cancelled statement --
+        # produces no evidence at all and the investigation stalls at low confidence.
+        plain_failures = [
+            f
+            for f in (failed_runs + related_failures)
+            if f not in vendor_failures and f.get("error_code")
+        ]
+        if plain_failures and not failed_loads:
+            sample = plain_failures[0]
+            text = f"{sample.get('error_code', '')} {sample.get('error_message', '')}".lower()
+            transient = any(
+                word in text
+                for word in ("timeout", "cancelled", "canceled", "resource", "queue",
+                             "throttl", "capacity", "connection reset", "temporarily")
+            )
+            evidence.append(
+                self.evidence(
+                    f"{len(plain_failures)} task run(s) failed with "
+                    f"[{sample['error_code']}] {sample['error_message'][:90]}.",
+                    detail=(
+                        "The error names an execution-environment limit rather than "
+                        "anything about the data or the query logic."
+                        if transient
+                        else "The error is specific to this task's logic or inputs."
+                    ),
+                    strength=0.75 if transient else 0.5,
+                    supports=["infrastructure_failure"] if transient else [],
+                    refutes=(
+                        ["upstream_schema_drift", "bad_deploy_join_fanout",
+                         "source_config_change"]
+                        if transient
+                        else []
+                    ),
+                    directive_id=directive_id,
+                    provenance=provenance,
+                    sensitive=True,
+                )
+            )
+            if transient:
+                hypotheses.append(
+                    self.hypothesis(
+                        "infrastructure_failure",
+                        f"The build for {primary} was cancelled by the execution "
+                        "environment, not by anything wrong with the data or the code.",
+                        [
+                            "Warehouse contention or a resource limit is reached",
+                            "The statement is cancelled before completing",
+                            "The target asset misses its build and goes stale",
+                        ],
+                        0.75,
+                        3,
+                    )
+                )
+
         if findings["all_runs_succeeded"]:
             evidence.append(
                 self.evidence(

@@ -108,6 +108,7 @@ class GraphState(TypedDict, total=False):
     round: int
     verdict: RootCauseVerdict
     proposal: RemediationProposal
+    gate_requirement: dict[str, Any]
     bundle: DisclosureBundle
     business_gate: GateOutcome
     technical_gate: GateOutcome
@@ -355,7 +356,73 @@ def build_graph(rt: Runtime):  # noqa: C901 -- the topology is the point
                 "rationale": requirement.rationale,
             },
         )
-        return {"proposal": proposal, "lifecycle": IncidentState.DIAGNOSED.value}
+        return {
+            "proposal": proposal,
+            "gate_requirement": {
+                "business": requirement.business_gate,
+                "technical": requirement.technical_gate,
+                "rationale": requirement.rationale,
+            },
+            "lifecycle": IncidentState.DIAGNOSED.value,
+        }
+
+    def route_after_plan(state: GraphState) -> str:
+        """
+        The autonomy decision, actually acted on.
+
+        Everything that needs a human goes to disclosure and the gates. The narrow
+        case that does not -- SEV4, fully reversible, no code change -- skips straight
+        to execution and tells the pipeline owner afterwards. Waking four people to
+        approve re-running a failed task is how an approval process gets ignored.
+        """
+        requirement = state.get("gate_requirement", {"business": True})
+        return "disclose" if requirement.get("business", True) else "autonomous"
+
+    def autonomous(state: GraphState) -> GraphState:
+        """Execute without gates, then notify. Used only where the ladder allows it."""
+        packet, proposal = state["packet"], state["proposal"]
+        rationale = state.get("gate_requirement", {}).get("rationale", "")
+
+        rt.trace.emit(
+            "autonomous",
+            AgentRole.SUPERVISOR.value,
+            "proceeding without human approval -- " + rationale,
+            {"severity": packet.severity.value, "max_risk": proposal.max_risk_tier.label},
+        )
+        agent = ExecutorVerifier(vcs=rt.vcs, **rt.agent_kwargs())
+        result = agent.run(packet, proposal, approved=True)
+
+        # Notified after the fact, not asked beforehand. The distinction matters: the
+        # owner still learns what happened, they just were not made a bottleneck for it.
+        rt.email.send_notification(
+            rt.settings.recipients.pipeline_owner,
+            f"[auto-resolved] {packet.title}",
+            f"{rationale}\n\n"
+            f"{result.executed} reversible step(s) completed and verified. "
+            f"No human approval was required.\n\n"
+            f"Residual risk: {result.residual_risk}\n\n"
+            "If this was the wrong call, the autonomy rules are in policy.py and every "
+            "step taken has a rollback recorded in the audit trail.",
+        )
+        rt.chain.append(
+            actor=AgentRole.SUPERVISOR.value,
+            actor_kind="agent",
+            action="remediated_autonomously",
+            detail={
+                "rationale": rationale,
+                "steps": result.executed,
+                "recovered": result.recovered,
+                "notified": rt.settings.recipients.pipeline_owner,
+            },
+        )
+        return {
+            "execution": result,
+            "lifecycle": (
+                IncidentState.RESOLVED.value
+                if result.recovered
+                else IncidentState.REMEDIATING.value
+            ),
+        }
 
     def disclose(state: GraphState) -> GraphState:
         agent = DisclosureOfficer(**rt.agent_kwargs())
@@ -539,7 +606,23 @@ def build_graph(rt: Runtime):  # noqa: C901 -- the topology is the point
     def close(state: GraphState) -> GraphState:
         packet = state["packet"]
         execution = state.get("execution")
-        bundle = state["bundle"]
+        # An autonomously-resolved incident never went through disclosure, so there is
+        # no business brief to quote -- it was already notified by the autonomous node.
+        bundle = state.get("bundle")
+        if bundle is None:
+            rt.chain.append(
+                actor=AgentRole.AUDIT.value,
+                actor_kind="agent",
+                action="incident_closed",
+                detail={
+                    "path": "autonomous",
+                    "recovered": execution.recovered if execution else False,
+                    "steps_executed": execution.executed if execution else 0,
+                    "budget": rt.ledger.summary(),
+                },
+            )
+            return {"lifecycle": state.get("lifecycle", IncidentState.RESOLVED.value)}
+
         rt.email.send_notification(
             rt.settings.recipients.pipeline_owner,
             f"[resolved] {packet.title}",
@@ -577,6 +660,7 @@ def build_graph(rt: Runtime):  # noqa: C901 -- the topology is the point
     builder.add_node("round_two", prepare_round_two)
     builder.add_node("escalate", escalate)
     builder.add_node("plan", plan)
+    builder.add_node("autonomous", autonomous)
     builder.add_node("disclose", disclose)
     builder.add_node("disclosure_failed", disclosure_failed)
     builder.add_node("business_gate", business_gate)
@@ -608,7 +692,11 @@ def build_graph(rt: Runtime):  # noqa: C901 -- the topology is the point
         {"plan": "plan", "escalate": "escalate", "round_two": "round_two"},
     )
 
-    builder.add_edge("plan", "disclose")
+    # The autonomy ladder decides whether humans are involved at all.
+    builder.add_conditional_edges(
+        "plan", route_after_plan, {"disclose": "disclose", "autonomous": "autonomous"}
+    )
+    builder.add_edge("autonomous", "close")
     builder.add_conditional_edges(
         "disclose",
         route_after_disclosure,

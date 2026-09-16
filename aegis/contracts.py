@@ -15,7 +15,7 @@ Flow:
       -> RootCauseVerdict        RCA: score hypotheses, decide PROCEED / DIG / ESCALATE
       -> RemediationProposal     Planner: data remediation + code fix, risk-tiered
       -> DisclosureBundle        Disclosure: one verdict, two audiences, redaction enforced
-      -> GateOutcome (business)  PO + Scrum Master. Approve unlocks the technical tier.
+      -> GateOutcome (business)  Product Owner. Approve unlocks the technical tier.
       -> GateOutcome (technical) Developer + Eng Manager. Approve unlocks execution.
       -> ExecutionResult         Executor: remediate data, open PR, verify, roll back
       -> AuditEvent[]            Hash-chained, append-only, for the whole lifecycle
@@ -394,6 +394,26 @@ class RootCauseVerdict(BaseModel):
 # --------------------------------------------------------------------------- #
 
 
+class ChangeMagnitude(str, Enum):
+    """
+    How much a code change actually alters behaviour.
+
+    Separate from `RiskTier`, which describes what an *action* does to data. A patch can
+    be perfectly safe to apply and still change what the pipeline means, and a reviewer
+    cares about that distinction: reformatting a model and dropping a column are both
+    "one file changed", and only one of them needs a business decision.
+    """
+
+    COSMETIC = "cosmetic"  # formatting, comments, naming -- behaviour identical
+    ADDITIVE = "additive"  # adds something new; existing behaviour unchanged
+    MODIFYING = "modifying"  # changes how existing data is produced
+    DESTRUCTIVE = "destructive"  # removes a field, restates history, changes meaning
+
+    @property
+    def rank(self) -> int:
+        return {"cosmetic": 0, "additive": 1, "modifying": 2, "destructive": 3}[self.value]
+
+
 class CodeChange(BaseModel):
     """A concrete patch the agent proposes to put in a pull request."""
 
@@ -404,6 +424,7 @@ class CodeChange(BaseModel):
     rationale: str
     diff: str = ""
     tests_added: list[str] = Field(default_factory=list)
+    magnitude: ChangeMagnitude = ChangeMagnitude.MODIFYING
 
 
 class RemediationStep(BaseModel):
@@ -446,7 +467,7 @@ class RemediationProposal(BaseModel):
 
 class BusinessBrief(BaseModel):
     """
-    What the Product Owner and Scrum Master see. Plain language only.
+    What the Product Owner sees. Plain language only.
 
     Machine-checked against the redaction policy: no diffs, no SQL, no stack traces,
     no table paths, no credentials, no raw records. If the check fails the incident
