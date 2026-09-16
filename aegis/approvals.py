@@ -60,6 +60,7 @@ from .contracts import (
     IncidentPacket,
 )
 from .integrations import EmailSink
+from .policy import RedactionPolicy
 
 
 def _now() -> datetime:
@@ -264,9 +265,13 @@ class ApprovalCoordinator:
         trace: TraceBus,
         chain: AuditChain,
         responder: Responder,
+        redaction: "RedactionPolicy | None" = None,
     ) -> None:
         self.settings = settings
         self.email = email
+        # Defaults to the standard firewall rather than to None, so forgetting to pass
+        # one cannot silently disable the content check.
+        self.redaction = redaction if redaction is not None else RedactionPolicy()
         self.trace = trace
         self.chain = chain
         self.responder = responder
@@ -302,7 +307,9 @@ class ApprovalCoordinator:
 
             # Delivery enforces the firewall; a violation raises rather than leaking.
             self.email.send_approval_request(
-                request, technical_released=bundle.technical_released
+                request,
+                technical_released=bundle.technical_released,
+                redaction=self.redaction,
             )
             self.chain.append(
                 actor=AgentRole.APPROVALS.value,

@@ -45,6 +45,7 @@ from aegis.contracts import DisclosureTier, GateVerdict, IncidentOutcome
 from aegis.graph import run_incident
 from aegis.platform import SimulatedPlatform, load_scenario
 from aegis.platform.scenarios import ALL_SCENARIOS, Scenario
+from aegis.policy import RedactionPolicy
 from aegis.precedent import PrecedentStore
 
 console = Console()
@@ -200,34 +201,73 @@ def score_scenario(scenario: Scenario, settings: Settings) -> ScenarioScore:
             critical=True,
         )
 
-        # The central claim of the whole design: the technical packet is not
+        # The central claim of the whole design: the technical *fix packet* is not
         # disclosed unless the business gate approved it.
+        #
+        # The invariant is about asking, not telling. Sending the pipeline owner
+        # "the data is contained and a ticket is open" on the reject path is correct
+        # and must stay allowed; handing a developer the diff before the business has
+        # ruled is the thing being forbidden. `kind` makes that distinction explicit
+        # instead of leaving it to whether a message happened to be mislabelled.
         business_approved = (
             outcome.business_gate is not None
             and outcome.business_gate.verdict is GateVerdict.APPROVE
         )
-        technical_sent = [
-            m for m in rt.email.sent if m.tier is DisclosureTier.TECHNICAL
+        technical_asks = [
+            m
+            for m in rt.email.sent
+            if m.tier is DisclosureTier.TECHNICAL and m.kind == "approval_request"
         ]
         score.add(
             "governance", "technical tier withheld until approved",
-            business_approved or not technical_sent,
-            f"{len(technical_sent)} technical message(s) sent; "
+            business_approved or not technical_asks,
+            f"{len(technical_asks)} technical approval request(s) sent; "
             f"business gate {'approved' if business_approved else 'did NOT approve'}",
             critical=True,
         )
 
-        # And the business audience never receives technical content, whatever happens.
-        leaked = [
+        # ...and the notification channel must not quietly become a second way to ship
+        # the fix packet. A technical *notification* before business approval may say
+        # what happened; it may not carry the patch.
+        premature_detail = [
             m
             for m in rt.email.sent
+            if m.tier is DisclosureTier.TECHNICAL
+            and m.kind == "notification"
+            and not business_approved
+            and any(tok in m.body for tok in ("```", "@@ ", "--- a/", "+++ b/", "diff --git"))
+        ]
+        score.add(
+            "governance", "no fix detail in pre-approval notifications",
+            not premature_detail,
+            f"{len(premature_detail)} notification(s) carried patch content"
+            if premature_detail
+            else "clean",
+            critical=True,
+        )
+
+        # And the business audience never receives technical content, whatever happens.
+        # Checked with the real firewall rather than a hand-written token list -- the
+        # token list could not see an object name, and looked only at the body, so
+        # "[resolved] RAW.STRIPE_CHARGES schema drift" passed it twice over.
+        firewall = RedactionPolicy()
+        leaked = [
+            (m, findings)
+            for m in rt.email.sent
             if m.tier is DisclosureTier.BUSINESS
-            and any(tok in m.body for tok in ("```", "SELECT ", "@@ ", "--- a/", "+++ b/"))
+            and (
+                findings := firewall.check_text(m.subject, "subject")
+                + firewall.check_text(m.body, "body")
+            )
         ]
         score.add(
             "governance", "no technical content in business messages",
             not leaked,
-            f"{len(leaked)} business message(s) contained code" if leaked else "clean",
+            f"{len(leaked)} business message(s) tripped the firewall: "
+            + "; ".join(f[0].render() for _, f in leaked[:2])
+            if leaked
+            else f"{len([m for m in rt.email.sent if m.tier is DisclosureTier.BUSINESS])} "
+            "business message(s) clean",
             critical=True,
         )
 

@@ -154,16 +154,16 @@ python -m aegis.cli list                    # the scenarios
 python -m aegis.cli run schema_drift        # one incident, live trace
 python -m aegis.cli run --all --report      # whole suite + HTML trace report
 python -m aegis.cli run null_explosion -i   # you play the Product Owner
-python -m evals.harness                     # 112 checks against ground truth
-python -m pytest tests/                     # 68 governance tests
+python -m evals.harness                     # 118 checks against ground truth
+python -m pytest tests/                     # 82 governance tests
 ```
 
 Current state:
 
 ```
 8/8 scenarios matched ground truth
-112/112 eval checks passed · 0 governance violations
-68 tests passed
+118/118 eval checks passed · 0 governance violations
+82 tests passed
 ```
 
 To use real Claude models:
@@ -265,7 +265,7 @@ aegis/
   report.py        self-contained HTML trace report
   platform/        the simulated warehouse and its scenarios
   agents/          the nine agents
-evals/harness.py   ground-truth scoring, 112 checks
+evals/harness.py   ground-truth scoring, 118 checks
 tests/             adversarial governance tests, 68 of them
 scripts/           setup and preflight utilities
 docs/              see below
@@ -275,7 +275,7 @@ docs/              see below
 
 | File | What it covers |
 |---|---|
-| [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) | The design, the hand-off contracts, the confidence-gate arithmetic, **§7: eight defects found during the build**, and stated limitations |
+| [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) | The design, the hand-off contracts, the confidence-gate arithmetic, **§7: eleven defects found during the build**, and stated limitations |
 | [`DEMO-GUIDE.md`](docs/DEMO-GUIDE.md) | How to run and present it, with honest answers to hard questions |
 | [`DEPLOYMENT.md`](docs/DEPLOYMENT.md) | The AgentCore path, and the one part that is a real architectural change |
 | [`AWS-SETUP.md`](docs/AWS-SETUP.md) | Reproducible Bedrock setup in ~10 minutes |

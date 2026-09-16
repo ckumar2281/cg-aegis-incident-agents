@@ -63,6 +63,7 @@ from .contracts import (
     GateKind,
     GateOutcome,
     GateVerdict,
+    HumanRole,
     IncidentOutcome,
     IncidentPacket,
     IncidentState,
@@ -77,7 +78,7 @@ from .integrations import BacklogStore, EmailSink, TicketSink, VcsClient, build_
 from .memory import IncidentMemory, PastIncident
 from .platform.client import SimulatedPlatform
 from .platform.scenarios import ScenarioSignals
-from .policy import AutonomyLadder, GateRequirement
+from .policy import AutonomyLadder, GateRequirement, RedactionPolicy
 from .precedent import PrecedentMatch, PrecedentStore
 from .reasoning import Reasoner
 from .tools import ToolBelt
@@ -143,6 +144,10 @@ class Runtime:
     approvals: ApprovalCoordinator
     ladder: AutonomyLadder
     precedents: PrecedentStore
+    #: The same firewall the disclosure agent is checked against, reused on the way
+    #: out. Held on the runtime so there is exactly one instance per incident and no
+    #: node can quietly construct a laxer one.
+    redaction: RedactionPolicy
 
     def agent_kwargs(self) -> dict[str, Any]:
         return {
@@ -170,8 +175,14 @@ def build_runtime(
     reasoner = Reasoner(settings, ledger, trace)
     tools = ToolBelt(platform, memory or IncidentMemory(now=platform.world.now))
     email, tickets, vcs, backlog = build_integrations(settings)
+    redaction = RedactionPolicy()
     approvals = ApprovalCoordinator(
-        settings=settings, email=email, trace=trace, chain=chain, responder=responder
+        settings=settings,
+        email=email,
+        trace=trace,
+        chain=chain,
+        responder=responder,
+        redaction=redaction,
     )
     return Runtime(
         settings=settings,
@@ -187,6 +198,7 @@ def build_runtime(
         approvals=approvals,
         ladder=AutonomyLadder(),
         precedents=precedents if precedents is not None else PrecedentStore(),
+        redaction=redaction,
     )
 
 
@@ -332,6 +344,8 @@ def build_graph(rt: Runtime):  # noqa: C901 -- the topology is the point
             f"[{packet.severity.value}] Needs a human: {packet.title}",
             f"Automated diagnosis was inconclusive ({verdict.confidence:.0%} confidence). "
             f"Ticket {ticket.key} raised. Affected data is contained and no changes were made.",
+            role=HumanRole.PIPELINE_OWNER,
+            incident_id=packet.incident_id,
         )
         return {"ticket": ticket, "lifecycle": IncidentState.ESCALATED.value}
 
@@ -465,6 +479,8 @@ def build_graph(rt: Runtime):  # noqa: C901 -- the topology is the point
             f"Residual risk: {result.residual_risk}\n\n"
             "If this was the wrong call, the autonomy rules are in policy.py and every "
             "step taken has a rollback recorded in the audit trail.",
+            role=HumanRole.PIPELINE_OWNER,
+            incident_id=packet.incident_id,
         )
         rt.chain.append(
             actor=AgentRole.SUPERVISOR.value,
@@ -596,6 +612,21 @@ def build_graph(rt: Runtime):  # noqa: C901 -- the topology is the point
             f"{gate.rationale}\n\nTicket {ticket.key} raised and assigned to "
             f"{packet.pipeline_owner}. The affected data remains quarantined and has not "
             f"reached any report.\n\n{ticket.url}",
+            role=HumanRole.PIPELINE_OWNER,
+            incident_id=packet.incident_id,
+        )
+        # The business ruled here, so the business is told the outcome -- in the same
+        # plain terms the brief was already cleared in, through the same firewall.
+        rt.email.send_notification(
+            rt.settings.recipients.product_owner,
+            f"[not proceeding] {bundle.business.headline}",
+            f"{bundle.business.what_happened}\n\n"
+            f"Impact: {bundle.business.business_impact}\n\n"
+            "The fix was declined, so nothing was changed. The affected data is being "
+            "held back and has not reached any report. A ticket is with the owning team.",
+            role=HumanRole.PRODUCT_OWNER,
+            redaction=rt.redaction,
+            incident_id=packet.incident_id,
         )
         rt.chain.append(
             actor=AgentRole.SUPERVISOR.value,
@@ -642,6 +673,19 @@ def build_graph(rt: Runtime):  # noqa: C901 -- the topology is the point
             f"{gate.rationale}\n\nAdded to the future-issues list:\n\n"
             f"  {entry.title}\n  {entry.high_level_change}\n  Effort: {entry.estimated_effort}\n\n"
             "No changes were made. Revisit at sprint planning.",
+            role=HumanRole.PIPELINE_OWNER,
+            incident_id=packet.incident_id,
+        )
+        rt.email.send_notification(
+            rt.settings.recipients.product_owner,
+            f"[deferred] {bundle.business.headline}",
+            f"{bundle.business.what_happened}\n\n"
+            f"Parked for later at your request. High-level change kept on the "
+            f"future-issues list: {entry.high_level_change}\n\n"
+            "Nothing was changed and the affected data is still being held back.",
+            role=HumanRole.PRODUCT_OWNER,
+            redaction=rt.redaction,
+            incident_id=packet.incident_id,
         )
         rt.chain.append(
             actor=AgentRole.SUPERVISOR.value,
@@ -697,6 +741,21 @@ def build_graph(rt: Runtime):  # noqa: C901 -- the topology is the point
                 else ""
             )
             + f"\n\nResidual risk: {execution.residual_risk if execution else 'unknown'}",
+            role=HumanRole.PIPELINE_OWNER,
+            incident_id=packet.incident_id,
+        )
+        # And the business audience that approved it hears that it landed, without the
+        # object names, the PR link or the step count that the owner needs.
+        rt.email.send_notification(
+            rt.settings.recipients.product_owner,
+            f"[resolved] {bundle.business.headline}",
+            f"{bundle.business.what_happened}\n\n"
+            f"The fix you approved has been applied and checked. "
+            f"{bundle.business.business_impact}\n\n"
+            "Nothing further is needed from you.",
+            role=HumanRole.PRODUCT_OWNER,
+            redaction=rt.redaction,
+            incident_id=packet.incident_id,
         )
         # A human approval that resolved cleanly becomes a standing decision, so the
         # same question is not asked again next month. Only on a clean resolution:

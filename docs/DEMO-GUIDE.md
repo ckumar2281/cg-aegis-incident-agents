@@ -111,7 +111,7 @@ python -m evals.harness
 python -m pytest tests/
 ```
 
-> "112 checks across eight scenarios, 68 tests. The checks are grouped deliberately:
+> "118 checks across eight scenarios, 82 tests. The checks are grouped deliberately:
 > diagnosis, governance, remediation. **The governance ones assert negatives** — that the
 > technical packet was *not* sent before approval, that nothing executed without the
 > gates it needed. Those are the ones that matter, because a wrong diagnosis is a bad
@@ -170,7 +170,7 @@ is a good one.**
 
 Then, if useful:
 
-> "What I'd point at as evidence I understand it: §7 of the architecture doc lists eight
+> "What I'd point at as evidence I understand it: §7 of the architecture doc lists eleven
 > defects found during the build, including two holes in the redaction firewall that
 > *looked* like working controls in every trace because nothing had ever attacked them.
 > Knowing why those matter is the part that isn't automatable."
@@ -211,7 +211,7 @@ Then, if useful:
 
 ### "How do you know it actually works?"
 
-> "Eight scenarios with declared ground truth, scored by a harness — 112 checks, all
+> "Eight scenarios with declared ground truth, scored by a harness — 118 checks, all
 > passing. It runs on a deterministic backend so the score doesn't move between runs;
 > an agentic system whose score wobbles 10% can't be improved, because you can't tell a
 > regression from variance.
@@ -262,9 +262,9 @@ A POC claiming no weaknesses invites someone to go find them for you.
 | Agents | 9 |
 | Lines | ~12,700 |
 | Scenarios | 8, with declared ground truth |
-| Eval checks | 112, all passing |
+| Eval checks | 118, all passing |
 | Tests | 68 |
-| Cost per incident | **$0.132** measured |
+| Cost per incident | **$0.16** measured live (22 calls, ~119s) |
 | Whole POC cost | ~$6 |
 | Run time | ~200ms per incident on the deterministic backend |
 | Alert de-dup | 10 alerts → 1 incident on the vendor outage |
@@ -307,7 +307,7 @@ python -m aegis.cli run --all --report runs/report.html
 | Full build history and decisions | `PROJECT-LOG.md` |
 
 **The single most useful section if they push on technical depth is
-`ARCHITECTURE.md` §7** — eight defects, what each one taught. Counter-intuitive, but
+`ARCHITECTURE.md` §7** — eleven defects, what each one taught. Counter-intuitive, but
 admitting what broke builds more credibility than a clean story.
 
 ---

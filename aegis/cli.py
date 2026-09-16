@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.rule import Rule
 from rich.table import Table
@@ -212,9 +213,11 @@ def _summary(outcome: IncidentOutcome, rt, final, scenario) -> None:
         for message in rt.email.sent:
             tier_style = "green" if message.tier.value == "business" else "blue"
             mail.add_row(
-                message.role or "notification",
+                escape(message.role or "notification"),
                 f"[{tier_style}]{message.tier.value}[/{tier_style}]",
-                message.subject[:70],
+                # Escaped: subjects start with "[resolved]" / "[deferred]", which Rich
+                # would otherwise swallow as markup tags.
+                escape(message.subject[:70]),
             )
         console.print(Panel(mail, title="[bold]who was told what[/bold]",
                             border_style="dim", expand=False))

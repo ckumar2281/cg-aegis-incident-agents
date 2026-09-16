@@ -46,6 +46,11 @@ def _rx(p: str) -> re.Pattern[str]:
     return re.compile(p, re.IGNORECASE | re.MULTILINE)
 
 
+def _rx_cs(p: str) -> re.Pattern[str]:
+    """Case-sensitive variant, for rules whose whole signal *is* the casing."""
+    return re.compile(p, re.MULTILINE)
+
+
 #: Rules applied to every BUSINESS-tier artifact. Deliberately strict: a false
 #: positive costs one regeneration, a false negative leaks production internals to
 #: an audience that did not ask for them and cannot act on them.
@@ -67,7 +72,14 @@ BUSINESS_TIER_RULES: tuple[RedactionRule, ...] = (
         # Unified-diff headers and hunk markers. Deliberately NOT matching bare
         # "+ " / "- " line prefixes: those are markdown bullets, and a rule that
         # rejects every bulleted list would be turned off within a week.
-        _rx(r"^(---|\+\+\+)\s+\S|^@@[\s\-+0-9,]*@@|^diff --git|^index [0-9a-f]{7,}"),
+        #
+        # The separator is [ \t], not \s. With \s the pattern also matched a bare
+        # "---" line followed by any text -- a markdown horizontal rule. The approval
+        # emails use those as section dividers, so the rule fired on six of the eight
+        # scenarios' own business briefs the moment anything actually checked the
+        # rendered body. A real diff header carries its path on the same line
+        # ("--- a/etl/stripe_ingest.py"), which this still matches.
+        _rx(r"^(---|\+\+\+)[ \t]+\S|^@@[\s\-+0-9,]*@@|^diff --git|^index [0-9a-f]{7,}"),
         "Patch/diff content is technical-tier only",
     ),
     RedactionRule(
@@ -76,7 +88,15 @@ BUSINESS_TIER_RULES: tuple[RedactionRule, ...] = (
         # original rule required three segments, which meant it never fired on this
         # warehouse at all -- every object here is SCHEMA.TABLE. A control that
         # cannot match the thing it guards against is decoration.
-        _rx(r"\b[A-Z][A-Z0-9_]{2,}\.[A-Z][A-Z0-9_]{2,}(\.[A-Z][A-Z0-9_]{2,})?\b"),
+        #
+        # Case-SENSITIVE, unlike every other rule here. The pattern is written in
+        # upper case because Snowflake object names are upper case, but the shared
+        # IGNORECASE flag quietly turned it into "any two dotted words", which matches
+        # `approvals.example.com` -- the approval link in the Product Owner's own
+        # email. A rule that blocks the button the recipient is meant to press is a
+        # rule someone switches off. It stayed invisible only because nothing checked
+        # a rendered email body until now.
+        _rx_cs(r"\b[A-Z][A-Z0-9_]{2,}\.[A-Z][A-Z0-9_]{2,}(\.[A-Z][A-Z0-9_]{2,})?\b"),
         "Database object names are technical-tier only",
     ),
     RedactionRule(

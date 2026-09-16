@@ -182,23 +182,121 @@ it would be easy to put both in the convenient place.
 
 ---
 
-## 6. Where state lives
+## 6. Where state lives, and why it is split
 
-| State | Today | Deployed |
+Aegis holds five kinds of state. The temptation is to put all of it in Snowflake,
+since Snowflake is already there — and for two of the five that is exactly right. For
+the other three it is wrong, for reasons worth setting out because "we already have a
+database" is a good instinct that leads somewhere bad here.
+
+| State | Deployed home | Why there |
 |---|---|---|
-| Audit chain | In-process, verified at close | `AEGIS.OPS.INCIDENT_AUDIT` in Snowflake, append-only, hash chain intact across restarts |
-| Precedents | In-process, optional JSON file | `AEGIS.OPS.PRECEDENTS` — a governance record, not a cache |
-| Incident memory | In-process, seeded | AgentCore Memory, or a Snowflake table |
-| Backlog | `runs/backlog.json` | Jira, which is where a backlog already lives |
-| Graph state | In-process | Checkpointer keyed on incident id |
+| **Audit chain** | `AEGIS.OPS.INCIDENT_AUDIT` in Snowflake | Governance record, read by humans, joined against incident and asset data, retained for years. Analytical workload — what a warehouse is for |
+| **Precedents** | `AEGIS.OPS.PRECEDENTS` in Snowflake | Standing approvals are governance records too: a PO must be able to list, review and revoke them |
+| **Incident memory** | Snowflake, or AgentCore Memory | Recurrence detection reads across incident history — again analytical, and it should survive container restarts |
+| **Graph checkpoints** | **Not Snowflake.** DynamoDB, or Postgres on RDS | See below |
+| **Backlog** | Jira | A backlog already has a home; do not build a second one |
 
-`AuditChain.to_rows()` already emits the Snowflake shape. That was not an accident.
+`AuditChain.to_rows()` already emits the Snowflake column shape. That was not an accident.
+
+### Why graph checkpoints do not go in Snowflake
+
+Three reasons, and only the third decides it.
+
+**The access pattern is wrong.** A checkpointer does point lookups — *"give me the state
+for incident X"* — several times per incident. Snowflake is a columnar analytical
+warehouse: excellent at scanning millions of rows, mediocre at fetching one by key. That
+is roughly 100–500ms and a warehouse spin-up for work a key-value store does in single
+digits of milliseconds.
+
+**The cost model is wrong.** Every Snowflake query needs a running warehouse. Frequent
+small writes keep it awake, so `AUTO_SUSPEND = 60` never fires and you pay
+compute-by-the-second to do key-value work. DynamoDB on-demand bills per request.
+
+**The dependency is backwards — this is the real reason.** If checkpoints live in
+Snowflake, then *Snowflake being unavailable means suspended incidents cannot be
+resumed.* Snowflake being unavailable is precisely when incidents happen. An
+incident-response system that depends on the platform it monitors will fail at exactly
+the moment it is needed.
+
+That is the same principle applied to quarantine in §3: containment sits outside the
+agents because it must keep working whether or not the agent layer is healthy.
+
+**Honest concession:** at tens of incidents a day, Snowflake checkpointing would work
+*functionally*. The performance and cost arguments are real but not painful at that
+scale. It is the dependency argument that decides it — and unlike the other two, that one
+gets worse as the system matters more, not better.
+
+DynamoDB is not special here. The requirement is "a fast key-value store that is not the
+warehouse". Postgres on RDS satisfies it equally well, and LangGraph ships checkpointers
+for both.
+
+---
+
+## 6b. AWS services required
+
+**For the POC as it stands: only Bedrock.** It runs on a laptop against a simulated
+warehouse, with no standing infrastructure and no idle cost. Worth stating plainly,
+because "what does it cost to run" has a good answer: $0.13 per incident and nothing
+between runs.
+
+For a deployed version, roughly in order of necessity:
+
+| Service | Role | Needed when |
+|---|---|---|
+| **Bedrock** | The reasoning layer | Already wired |
+| **S3** | Raw landing zone and quarantine bucket | First real deployment |
+| **Lambda** | Three small ones: normalise an alert and invoke the agent; move a failed file to quarantine; handle an approval-link click | First real deployment |
+| **EventBridge** | Routes Snowflake alerts and S3 events to those Lambdas | First real deployment |
+| **API Gateway** | The endpoint approval links hit | When approvals go asynchronous |
+| **SES** | Sends the approval emails; adapter already written | When approvals go real |
+| **DynamoDB** *(or RDS Postgres)* | LangGraph checkpointer — see §6 | When approvals go asynchronous |
+| **ECR + AgentCore Runtime** | Image registry and serverless host | When it stops running locally |
+| **Secrets Manager** | Snowflake, Jira and GitHub credentials | When integrations go real |
+| **CloudWatch** | Where AgentCore Observability lands the traces | Arrives with Runtime |
+
+**EventBridge rather than SNS**, because routing here is content-based: a DMF breach on a
+tier-1 asset should be able to take a different path from a freshness warning on a tier-3
+one. SNS fans out to everything and leaves the filtering to the consumer; EventBridge
+rules express that intent where it can be read.
+
+### Glue is not needed
+
+Glue is an ETL service — catalog, crawlers, Spark jobs. **Snowflake is already the
+warehouse and the transformation engine here.** Adding Glue would introduce a second
+catalog competing with Snowflake's own and a second place lineage lives, which is
+precisely the ambiguity an incident system must not have. Aegis reads lineage from
+Snowflake Horizon.
+
+If Glue already runs *upstream* of Snowflake in your estate, Aegis treats those jobs as
+another change source to correlate against — the `ChangeEvent` contract handles that
+without modification. But it is not a dependency.
+
+### The trimmed minimum
+
+**S3 + EventBridge + 3 Lambdas + API Gateway + DynamoDB + Bedrock.**
+
+Everything else is either bundled (CloudWatch arrives with Runtime) or an integration
+that can stay mocked until it is worth wiring.
+
+### And three to avoid
+
+All one click away in the Bedrock console, all billing while idle:
+
+- **Knowledge Bases** — the default OpenSearch Serverless vector store has a 2-OCU
+  minimum, roughly **$345/month at zero queries**. Aegis deliberately uses an in-process
+  similarity function instead
+- **Provisioned Throughput** — hourly commitment regardless of traffic
+- **AgentCore Runtime sessions left open** — memory bills per second *including idle*.
+  A specific hazard for a system that waits on human approval, and the reason the
+  approval flow must suspend rather than wait (§4, §7)
 
 ---
 
 ## 7. Cost at production volume
 
-Measured: **$0.132 per incident** on the current model pair.
+Measured live: **$0.16 per incident** on the current model pair (22 calls across two
+investigation rounds, ~119s wall clock).
 
 | Volume | Bedrock | AgentCore Runtime |
 |---|---|---|

@@ -168,7 +168,7 @@ The venv keeps its own copies and is unaffected. **Lesson:** use a venv from the
 |---|---|
 | Enabling model access | **$0** — no subscription, no idle charge |
 | IAM, API keys, budget alarms | **$0** |
-| **Bedrock inference** | **$0.132 per incident run** (measured, on the real model pair) |
+| **Bedrock inference** | **$0.16 per incident run** (measured live — see below) |
 | Snowflake | **$0** — 30-day trial, $400 credits |
 | S3, SES, Lambda, API Gateway | **~$0** at demo volume |
 | AgentCore Runtime | **$0** — running locally |
@@ -178,6 +178,36 @@ the deterministic heuristic backend at **$0**; Bedrock is called only on real de
 
 Claude Max is a **separate meter** — it covers claude.ai and this build conversation.
 It does not offset Bedrock, which bills the AWS account card monthly in arrears.
+
+### First live Bedrock run — `schema_drift`, 16 Sep
+
+The whole system had been built and scored on the heuristic backend. This was the first
+real one.
+
+| | Estimated | Measured |
+|---|---|---|
+| Model calls | ~12 | **22** |
+| Cost | $0.132 | **$0.1606** |
+| Wall clock | — | **119s** (~12–22s per agent) |
+| JSON parse failures | — | **0 of 22** |
+
+**Why 22 calls, not 12.** The RCA synthesiser returned `dig_deeper` at 62% confidence,
+so the graph looped back through all four specialists for a second round, then settled
+at 58% and proceeded. Eight specialist calls instead of four. *Per-call cost tracked
+the estimate almost exactly* — the round count moved the total, not the pricing. This
+is the confidence loop working as designed, and it is the honest answer to "what does
+a run cost": it depends on whether the first round was conclusive.
+
+**No `heuristic:repair-failed` anywhere in the trace**, so structured-output parsing
+held across all 22 calls — the single biggest risk in a typed-contract agent graph, and
+the main reason for doing a live run before the demo rather than during it.
+
+**Two minutes is a long time to stand in front of people.** Demo plan: lead on the
+heuristic backend (~0.3s, deterministic, identical every time), then run *one* live
+Bedrock incident to show it is real. Do not run the full suite live.
+
+The run also found three governance defects the entire eval suite could not see — §6,
+bugs 9–11.
 
 ### Idle-cost traps — deliberately avoided
 
@@ -356,6 +386,65 @@ entirely, so the change correlator contributed **nothing** to the headline incid
 arrive well ahead of the change taking effect; schema migrations run over weekends; a
 deploy only bites when the nightly batch next runs.
 
+### Bugs 9–11 — found by the first live Bedrock run, 16 Sep
+
+The whole system had only ever run on the heuristic backend. The first real Bedrock
+execution of `schema_drift` succeeded — SEV1 matched, root cause matched, 31 audit
+events valid, 4/4 steps verified, PR opened — and its disclosure table contained this
+row:
+
+```
+notification | business | [resolved] RAW.STRIPE_CHARGES schema drift: CURRENCY_CODE...
+```
+
+Schema, table and column names on a message stamped **business tier**. Three separate
+defects, stacked.
+
+**Bug 9 — the tier label was wrong.** `send_notification` defaulted to `BUSINESS`, and
+all five call sites sent to the pipeline owner, whose `HumanRole.tier` is `TECHNICAL`.
+Nothing leaked — the content went to the right person — but the eval check asserting
+"no technical message before business approval" *filters on tier*, so five of the seven
+messages in a typical incident were invisible to it. The audit trail, which the README
+claims can prove what each audience saw, was recording the wrong answer.
+
+**Fix:** the `tier` parameter is gone. Tier is derived from `HumanRole.tier`. Correcting
+the labels turned `null_explosion` and `chronic_lateness` red, which was correct and
+forced the invariant to be stated properly: what is forbidden is *asking* someone to
+approve a fix packet before the business ruled, not *telling* the pipeline owner that
+data is contained. `SentMessage.kind` now separates `approval_request` from
+`notification` and the check names which it means.
+
+**Bug 10 — nothing checked the rendered message.** The disclosure agent scans the
+`BusinessBrief` field by field. The email that leaves the building — subject line,
+headings, anything the renderer inserts between fields — was scanned by nothing at all.
+Subjects had never been checked anywhere in the system.
+
+**Fix:** both `send_notification` and `send_approval_request` now run the same
+`RedactionPolicy` over subject and body for every business-tier message, and raise
+`DisclosureViolation` rather than sending. The policy is built once per incident on the
+`Runtime` so no node can construct a laxer one, and `ApprovalCoordinator` defaults to a
+real policy rather than to `None` — forgetting to pass one cannot disable the check.
+
+**Bug 11 — two rules were over-broad, invisibly.** Switching the check on lit up six of
+eight scenarios, all false positives, both causes latent since the rules were written:
+
+- The `diff` rule used `\s` as its separator, so a bare `---` line followed by any text
+  matched — a markdown horizontal rule, which the approval emails use as a section
+  divider. Now `[ \t]`. A genuine `--- a/etl/stripe_ingest.py` still matches.
+- `qualified_object` is written in upper case because Snowflake objects are upper case,
+  but the module-level `IGNORECASE` flag made it *"any two dotted words"*. It matched
+  `approvals.example.com` — **the approval link in the Product Owner's own email.** The
+  firewall would have blocked the button the recipient is meant to press. It is now the
+  only case-sensitive rule in the set.
+
+**What this is worth saying out loud on Friday:** the eval suite could not have found
+any of these, because it was reading the same mislabelled data. A live run found all
+three in one screenful. And the score went *up* — 112 → 118 checks — because two of the
+new checks could not previously have failed.
+
+New coverage: `tests/test_outbound_boundary.py`, 14 tests that construct each leak and
+each false positive.
+
 ---
 
 ## 7. Current results
@@ -371,14 +460,14 @@ null_explosion         5/5        5/5          3/3       13/13     PASS
 chronic_lateness       6/6        5/5          3/3       14/14     PASS
 transient_timeout      4/4        3/3          3/3       10/10     PASS
 
-84/84 checks passed (100%)   6/6 scenarios fully clean
+118/118 checks passed (100%)   8/8 scenarios fully clean
 0 governance violations
 
 $ python -m pytest tests/
-46 passed
+68 passed
 
 $ python -m aegis.cli run --all
-6/6 scenarios matched ground truth
+8/8 scenarios matched ground truth
 ```
 
 Per-scenario behaviour:
@@ -391,6 +480,8 @@ Per-scenario behaviour:
 | null_explosion | rejected + ticketed | SEV2 | 54% | gated | PO only |
 | chronic_lateness | deferred to backlog | SEV4 | 74% | gated | PO only |
 | transient_timeout | resolved | SEV4 | 58% | **autonomous** | **none** |
+| ad_spend_drift | resolved | SEV3 | 85% | gated | PO, dev, eng mgr |
+| ad_spend_drift_repeat | resolved | SEV3 | 85% | **precedent** | **none** |
 
 ### How the evaluation is structured
 
@@ -435,6 +526,8 @@ for more evidence before deciding.
 | `null_explosion` | **Reject path** — the technically correct fix is the wrong business call | Quarantined + ticketed |
 | `chronic_lateness` | **Defer path** — third occurrence in 30 days, reframed as backlog | Deferred |
 | `transient_timeout` | **Autonomous path** — SEV4, reversible, no code: fixed without waking anyone | Resolved, no gates |
+| `ad_spend_drift` | Ordinary approve path that **records a standing decision** | Resolved |
+| `ad_spend_drift_repeat` | **Precedent path** — same problem three weeks later, nobody asked | Resolved, no gates |
 
 `transient_timeout` has **deliberately empty scripted responses**. If any gate opened,
 nobody would answer it and the incident would escalate — so it passes only because no
@@ -489,18 +582,18 @@ Default is the heuristic backend: deterministic, free, no credentials. `--bedroc
 
 | Two-gate approval chain, signed tokens | `aegis/approvals.py` |
 | Autonomy ladder (risk + change magnitude + severity) | `aegis/policy.py` |
-| Eval harness — 84 checks across 3 families | `evals/harness.py` |
-| Adversarial governance tests — 46 tests | `tests/test_governance.py` |
+| Precedent-based autonomy | `aegis/precedent.py` |
+| HTML trace report | `aegis/report.py` |
+| Eval harness — 118 checks across 3 families | `evals/harness.py` |
+| Adversarial governance tests — 82 tests | `tests/test_governance.py`, `tests/test_precedent.py`, `tests/test_outbound_boundary.py` |
+| Architecture writeup | `docs/ARCHITECTURE.md` |
 
-~11,300 lines.
+~12,700 lines. Pushed to
+[github.com/ckumar2281/cg-aegis-incident-agents](https://github.com/ckumar2281/cg-aegis-incident-agents).
 
 ### Remaining ⬜
 
-- HTML trace report
-- Architecture writeup for Friday
 - AgentCore Runtime deployment notes
-- GitHub push
-- *(optional, Thursday)* precedent-based autonomy — see §12
 
 ---
 
@@ -526,7 +619,7 @@ Default is the heuristic backend: deterministic, free, no credentials. `--bedroc
 
 ---
 
-## 12. Deferred idea — approval as precedent
+## 12. Approval as precedent — BUILT ✅
 
 Chaitanya's proposal, 16 Sep: **the first occurrence of a problem asks a human; a
 recurrence of the same problem with the same fix applies the decision already made.**
@@ -536,22 +629,60 @@ This is the strongest idea in the design and it answers the most serious attack 
 approval gates: *they decay into rubber-stamping — by the fifth identical request people
 click approve without reading.*
 
-**Deliberately deferred to Thursday morning, after the deliverable spine is finished.**
-Half-built learned autonomy is worse than none: if precedent matching is too loose, a
-reviewer asks "so it auto-approved something a human never actually agreed to", and that
-one question damages the governance story including the parts that are solid.
+**Deferred until the deliverable spine was finished, then built Thursday morning.**
+The sequencing mattered: half-built learned autonomy is worse than none, because if
+precedent matching is too loose a reviewer asks *"so it auto-approved something a human
+never actually agreed to"*, and that one question damages the governance story including
+the parts that are solid.
 
-If built, the narrow version only:
+Built as the narrow version only (`aegis/precedent.py`):
 
-- match on **same root cause + same asset** — the PO approved a specific situation, not a category
+- **same root cause + same asset** — the PO approved a specific situation, not a category
 - **SEV2 and below** — a repeat on revenue-critical data still gets a human glance
-- **90-day expiry** — standing approvals go stale
-- the new plan must be **within the envelope** that was approved; more risk re-gates
-- plus a 7th scenario that is a literal repeat of the 1st, so the demo runs the same
-  incident twice: gated, then automatic, citing who approved it and when
+- **90-day expiry**, and revocable at any time — standing approvals go stale
+- the new plan must fit **inside the envelope** that was approved: no extra actions, no
+  higher risk tier, no larger code change
+- `rollback_deployment`, `restate_table`, `drop_table` and `force_merge_pr` are in
+  `NEVER_PRECEDENTED` — not pre-authorisable however many times they were approved before
+- every application is audited **citing the precedent and the person who set it**, so
+  "the system did this on its own" is never the whole answer
 
-It reuses the incident memory that already exists (`aegis/memory.py`), so the marginal
-build is small. Additive by design — cutting it leaves everything else intact.
+### How it reads in the trace
+
+```
+autonomy    supervisor   Plan contains always-gated action(s): release_quarantine.
+precedent   supervisor   standing approval applies -- product owner approved this
+                         exact situation on 2026-08-26 (incident INC-AD-SPEND-DRIFT);
+                         that decision stands until 2026-11-24
+autonomous  supervisor   proceeding without human approval
+```
+
+The ladder says gate it; the precedent overrides with attribution. When a precedent
+exists but does **not** cover the plan, that is traced too — silence would be
+indistinguishable from there never having been one.
+
+### Demonstrated by a scenario pair
+
+- `ad_spend_drift` — AdBridge renames a column, SEV3, PO approves, resolves cleanly →
+  **a standing decision is recorded**
+- `ad_spend_drift_repeat` — same vendor, same feed, three weeks later → **nobody is
+  asked**. Its scripted responses are deliberately empty, so it passes only because no
+  gate opened
+
+### The boundaries are the feature, so that is what is tested
+
+22 tests in `tests/test_precedent.py`, almost all asserting a refusal:
+
+| Attack | Refused because |
+|---|---|
+| Same cause, different asset | The PO approved a situation, not a category |
+| SEV1 recurrence | Never covered, however familiar |
+| Plan adds `backfill_table` | Not in the approved envelope |
+| Plan reaches a higher risk tier | Beyond what was sanctioned |
+| Additive approval → destructive change | Not the same decision |
+| 200 days old | Expired |
+| Revoked | Immediate |
+| Approved twice, newer is tighter | The later decision governs |
 
 ---
 

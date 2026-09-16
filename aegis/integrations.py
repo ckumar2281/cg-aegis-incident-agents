@@ -21,17 +21,21 @@ import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .contracts import (
     ApprovalRequest,
     BacklogEntry,
     CodeChange,
     DisclosureTier,
+    HumanRole,
     IncidentPacket,
     PullRequestRef,
     TicketRef,
 )
+
+if TYPE_CHECKING:  # pragma: no cover - avoids a policy <-> integrations import cycle
+    from .policy import RedactionPolicy
 
 
 class DisclosureViolation(RuntimeError):
@@ -57,6 +61,11 @@ class SentMessage:
     message_id: str
     incident_id: str = ""
     role: str = ""
+    #: "approval_request" asks someone to rule on a fix and therefore carries the
+    #: fix packet. "notification" tells someone what already happened. The
+    #: disclosure rule that the technical packet must wait for business approval
+    #: applies to the former; conflating the two hides which one was actually sent.
+    kind: str = "notification"
 
 
 class EmailSink(ABC):
@@ -66,7 +75,11 @@ class EmailSink(ABC):
         self.sent: list[SentMessage] = []
 
     def send_approval_request(
-        self, request: ApprovalRequest, *, technical_released: bool
+        self,
+        request: ApprovalRequest,
+        *,
+        technical_released: bool,
+        redaction: "RedactionPolicy | None" = None,
     ) -> SentMessage:
         # The firewall, enforced at the boundary rather than by convention.
         if request.tier is DisclosureTier.TECHNICAL and not technical_released:
@@ -75,6 +88,21 @@ class EmailSink(ABC):
                 f"{request.role.value}: the business gate has not released it. "
                 "This is the disclosure firewall working as designed."
             )
+        # The tier check above governs *who* may be sent the technical packet. It says
+        # nothing about *what* is in a business-tier email -- and until now nothing did.
+        # The brief's fields were scanned individually by the disclosure agent, but the
+        # rendered body that actually leaves the building was never checked, so anything
+        # the renderer added between the fields was outside the firewall entirely.
+        if request.tier is DisclosureTier.BUSINESS and redaction is not None:
+            findings = redaction.check_text(
+                request.subject, "subject"
+            ) + redaction.check_text(request.body, "body")
+            if findings:
+                raise DisclosureViolation(
+                    f"Refusing to send a business-tier approval request for "
+                    f"{request.incident_id} to {request.role.value}: "
+                    + "; ".join(f.render() for f in findings)
+                )
         message = SentMessage(
             to=request.recipient,
             subject=request.subject,
@@ -84,14 +112,49 @@ class EmailSink(ABC):
             message_id=f"msg-{uuid.uuid4().hex[:12]}",
             incident_id=request.incident_id,
             role=request.role.value,
+            kind="approval_request",
         )
         self._deliver(message)
         self.sent.append(message)
         return message
 
     def send_notification(
-        self, to: str, subject: str, body: str, tier: DisclosureTier = DisclosureTier.BUSINESS
+        self,
+        to: str,
+        subject: str,
+        body: str,
+        *,
+        role: HumanRole,
+        redaction: "RedactionPolicy | None" = None,
+        incident_id: str = "",
     ) -> SentMessage:
+        """Tell someone what happened.
+
+        The tier is *derived from the recipient's role*, never passed in. An earlier
+        version defaulted every notification to BUSINESS while sending all of them to
+        the pipeline owner -- a technical recipient. Nothing leaked, because the
+        content was going to the right person, but the audit trail recorded the wrong
+        tier for five of the seven messages in a typical incident, and the eval check
+        that asserts "no technical message before business approval" silently stopped
+        seeing them. A control that mislabels what it is guarding cannot prove
+        anything. One source of truth now: `HumanRole.tier`.
+
+        Business-tier notifications go through the same firewall as business-tier
+        approval requests, over subject *and* body. Subject was previously unchecked
+        anywhere -- which is how `[resolved] RAW.STRIPE_CHARGES schema drift:
+        CURRENCY_CODE column missing` would have reached a business inbox.
+        """
+        tier = role.tier
+        if tier is DisclosureTier.BUSINESS and redaction is not None:
+            findings = redaction.check_text(subject, "subject") + redaction.check_text(
+                body, "body"
+            )
+            if findings:
+                raise DisclosureViolation(
+                    f"Refusing to send a business-tier notification for "
+                    f"{incident_id or 'incident'} to {role.value}: "
+                    + "; ".join(f.render() for f in findings)
+                )
         message = SentMessage(
             to=to,
             subject=subject,
@@ -99,6 +162,8 @@ class EmailSink(ABC):
             tier=tier,
             sent_at=_now(),
             message_id=f"msg-{uuid.uuid4().hex[:12]}",
+            incident_id=incident_id,
+            role=role.value,
         )
         self._deliver(message)
         self.sent.append(message)

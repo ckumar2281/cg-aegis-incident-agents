@@ -348,7 +348,9 @@ investigation round multiplies calls.
   ("row count is 3.1× median"). Cheaper, and it stops the model doing arithmetic
 - **Bounded rounds** — hard stop at 2
 
-Measured: **$0.132 per incident**; ~$6 for the whole POC.
+Measured live: **$0.16 per incident** (22 calls, two investigation rounds); ~$6 for
+the whole POC. A single-round incident lands nearer $0.09 — the confidence loop is the
+variable, not the pricing.
 
 ### No vector database
 
@@ -364,7 +366,7 @@ vector store with a **2-OCU minimum, roughly $345/month at zero queries**.
 
 ## 7. What went wrong, and what it teaches
 
-Eight defects found during the build. These are recorded because a reviewer will probe
+Eleven defects found during the build. These are recorded because a reviewer will probe
 exactly here, and because the fixes are more interesting than the features.
 
 | # | Defect | Why it matters |
@@ -377,6 +379,9 @@ exactly here, and because the fixes are more interesting than the features.
 | 5 | **The autonomy ladder was decorative** — it computed the decision, logged it, and the graph ignored it via an unconditional edge | The trace said "executing autonomously" and then asked four people anyway |
 | 6 | Pipeline forensics emitted **no evidence** for an ordinary task failure — only load failures and vendor errors had branches | A warehouse timeout is the commonest real incident and produced nothing |
 | 7–8 | **Two holes in the redaction firewall** | See below |
+| 9 | Every notification defaulted to **business tier** while every call site sent to the pipeline owner, a *technical* recipient | Five of seven messages per incident were recorded at the wrong tier — including in the audit trail that claims to prove who saw what |
+| 10 | **Neither an approval-request body nor any subject line was ever firewall-checked.** Only the brief's individual fields were | Anything the email renderer added *between* the fields left the building unchecked |
+| 11 | Two firewall rules were **over-broad in ways only a rendered email could reveal** | A control that blocks the recipient's own approval button is a control that gets switched off |
 
 ### The two firewall holes are the instructive ones
 
@@ -401,13 +406,71 @@ One deliberate restraint in the fix: the diff rule still does not match bare `+ 
 line prefixes, because those are markdown bullets. A control that rejects every bulleted
 list gets switched off within a week, and a disabled control is worse than a narrow one.
 
+### Defects 9–11: the firewall was guarding the wrong object
+
+These three were found by the **first live Bedrock run**, not by the eval suite — which
+is the point of running one. The run printed its disclosure table and a business-tier
+row read:
+
+```
+notification | business | [resolved] RAW.STRIPE_CHARGES schema drift: CURRENCY_CODE...
+```
+
+A schema name, a table name and a column name, on a message stamped *business tier*.
+Pulling that thread found three distinct defects stacked on each other.
+
+**The tier label was wrong (9).** `send_notification` defaulted to `BUSINESS`, and all
+five call sites passed no tier and sent to the pipeline owner — whose `HumanRole.tier`
+is `TECHNICAL`. Nothing actually leaked: the content reached the right person. But the
+eval check asserting *"no technical message before business approval"* filters on tier,
+so mislabelled messages were **invisible to the check that exists to catch them**. The
+fix removes the parameter entirely: tier is derived from `HumanRole.tier`, one source
+of truth, and a node cannot relabel its own message.
+
+Correcting the labels immediately turned two scenarios red — which was the right
+outcome, and forced the invariant to be stated precisely rather than accidentally. What
+the design forbids is *asking* a developer to approve a fix packet before the business
+has ruled. Telling the pipeline owner "the data is contained, a ticket is open" on the
+reject path is correct and must stay allowed. `SentMessage.kind` now distinguishes
+`approval_request` from `notification`, and the check names which one it means.
+
+**Nothing checked the rendered message (10).** The disclosure agent scans the
+`BusinessBrief` field by field. The *email* — subject line, section headings, whatever
+the renderer inserts between fields — was never scanned by anything. Both senders now
+run the same `RedactionPolicy` over subject and body for every business-tier message,
+and fail closed. The subject line had never been checked anywhere in the system.
+
+**Two rules were over-broad, invisibly (11).** Turning the check on lit up six of the
+eight scenarios — all false positives, and both causes were latent from the start:
+
+- The diff rule used `\s` as its separator, so a bare `---` line followed by any text
+  matched. That is a markdown horizontal rule, and the approval emails use them as
+  section dividers. Now `[ \t]`: a real header carries its path on the same line.
+- `qualified_object` is written in upper case because Snowflake objects are upper case
+  — but the shared `IGNORECASE` flag turned it into *"any two dotted words"*. It
+  matched `approvals.example.com`: **the approval link in the Product Owner's own
+  email.** The firewall would have blocked the button the recipient is meant to press.
+  That rule is now the one case-sensitive rule in the set.
+
+The generalisable lesson is narrower than "test your controls", and worth stating on
+its own:
+
+> **Guard the artifact that actually leaves, not the one you happen to have a schema
+> for.** The firewall had been validating a well-typed `BusinessBrief` for the whole
+> build. The thing that reaches a human inbox is a rendered string, and it is assembled
+> *after* the last check runs.
+
+And a second: correcting a mislabel is not cosmetic work. Defect 9 leaked nothing —
+it blinded a control. The eval score went **up** from 112 to 118 checks after these
+fixes, because two of the new checks could not previously have failed.
+
 ---
 
 ## 8. Results
 
 ```
 $ python -m evals.harness
-112/112 checks passed (100%)   8/8 scenarios fully clean
+118/118 checks passed (100%)   8/8 scenarios fully clean
 0 governance violations
 
 $ python -m pytest tests/
