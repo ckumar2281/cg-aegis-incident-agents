@@ -172,7 +172,7 @@ def build_runtime(
     trace = trace or TraceBus()
     chain = AuditChain(incident_id)
     ledger = BudgetLedger(policy=settings.budget)
-    reasoner = Reasoner(settings, ledger, trace)
+    reasoner = Reasoner(settings, ledger, trace, incident_id=incident_id)
     tools = ToolBelt(platform, memory or IncidentMemory(now=platform.world.now))
     email, tickets, vcs, backlog = build_integrations(settings)
     redaction = RedactionPolicy()

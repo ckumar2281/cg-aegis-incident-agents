@@ -271,8 +271,87 @@ behaves oddly, `env | grep AEGIS` shows you what's overriding the file.
 
 ---
 
+## 9. Seeing the runs in the AWS console
+
+Useful for two different reasons: debugging a live run, and proving on Friday that the
+Bedrock calls are real rather than mocked. There are two levels, and the first needs no
+setup at all.
+
+### Level 1 — CloudWatch metrics (already on, $0)
+
+Bedrock publishes these automatically under the **`AWS/Bedrock`** namespace, dimensioned
+by `ModelId`. Nothing to enable; you only need permission to read CloudWatch.
+
+> CloudWatch console → **Metrics → All metrics → Bedrock → By Model ID**
+
+| Metric | What it tells you |
+|---|---|
+| `Invocations` | Call count — should be ~22 for one two-round incident |
+| `InputTokenCount` / `OutputTokenCount` | The volume behind the cost figure |
+| `InvocationLatency` | Per-call latency; explains the ~119s wall clock |
+| `CacheReadInputTokenCount` / `CacheWriteInputTokenCount` | **Whether prompt caching is actually engaging.** Worth checking — it is the one cost optimisation the local trace cannot confirm |
+| `InvocationThrottles` | If a demo run stalls, look here first |
+
+Set the period to 1 minute; at 5 minutes a single incident is one flat blip.
+
+### Level 2 — model invocation logging (~3 minutes, then near-$0)
+
+Off by default: Bedrock does **not** retain prompts or completions unless you turn this
+on. Enabling it gives you the full request and response body for every call.
+
+> Bedrock console → **Settings** (left nav) → **Model invocation logging** → toggle on
+> → select the **Text** modality → choose **CloudWatch Logs only** → name a log group
+> (e.g. `/aegis/bedrock`) → let the console create the service role for you
+
+The console offers to create the IAM role that lets `bedrock.amazonaws.com` write to the
+log group; accept it rather than hand-rolling one. Each entry carries the timestamp,
+model ID, caller identity, token counts, and the input/output bodies inline up to 100 KB
+— past that, or for binary output, S3 is required. Text-only agent traffic is far under
+the limit.
+
+**Enable it in the same region your client calls** — `us-east-2` here. Logging is
+configured per region, and a cross-region inference profile does not move the
+configuration to wherever the request was ultimately served.
+
+**Cost:** CloudWatch Logs bills roughly $0.50/GB ingested and $0.03/GB-month stored. One
+incident is a few hundred KB, so a whole demo week is cents. Set the log group's
+retention to **1 day** anyway — it is one click and it means you cannot forget about it.
+
+### Per-agent cost attribution (the part worth showing)
+
+Every Converse call Aegis makes carries `requestMetadata` tags — `incident`, `agent` and
+`attempt` (`reasoning.py` `_request_metadata`). Bedrock records these in the invocation
+log, so once logging is on you can break a single incident's spend down **by agent**:
+
+> CloudWatch console → **Logs → Logs Insights** → select `/aegis/bedrock`
+
+```
+fields requestMetadata.agent as agent, modelId,
+       input.inputTokenCount as in_tok,
+       output.outputTokenCount as out_tok
+| filter requestMetadata.incident = "INC-SCHEMA_DRIFT"
+| stats count() as calls, sum(in_tok) as input, sum(out_tok) as output by agent, modelId
+| sort calls desc
+```
+
+That table is a good thing to have open in a second tab. It shows AWS's own records
+agreeing with the local ledger, it makes the fan-out visible as four specialists billed
+separately, and it demonstrates the model tiering — specialists on the cheap model,
+synthesis and disclosure on the strong one — as a fact rather than a claim.
+
+The tags are ignored when invocation logging is off, so the code is safe either way, and
+values are sanitised before they are sent: a request rejected mid-demo over a stray
+character in an incident ID would be a much worse outcome than a missing log tag.
+
+One caveat to state honestly if asked: these tags are **not** AWS cost-allocation tags.
+They do not appear in Cost Explorer or the billing report — they attribute *tokens* in
+the logs, and the per-agent USD figure still comes from the local ledger in `config.py`.
+
+---
+
 ## Reference
 
 - [Bedrock console](https://console.aws.amazon.com/bedrock/) · [pricing](https://aws.amazon.com/bedrock/pricing/)
 - [Inference profile prerequisites and IAM](https://docs.aws.amazon.com/bedrock/latest/userguide/inference-profiles-prereq.html)
+- [Model invocation logging](https://docs.aws.amazon.com/bedrock/latest/userguide/model-invocation-logging.html) · [runtime CloudWatch metrics](https://docs.aws.amazon.com/bedrock/latest/userguide/monitoring-runtime-metrics.html) · [per-request metadata tagging](https://docs.aws.amazon.com/bedrock/latest/userguide/cost-mgmt-request-metadata.html)
 - [Multi-agent SRE reference architecture on AgentCore](https://aws.amazon.com/blogs/machine-learning/build-multi-agent-site-reliability-engineering-assistants-with-amazon-bedrock-agentcore/)

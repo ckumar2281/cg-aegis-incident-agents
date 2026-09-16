@@ -143,14 +143,28 @@ class BedrockBackend:
         self._client = boto3.client("bedrock-runtime", region_name=region)
 
     def converse(
-        self, *, model_id: str, system: str, user: str, max_tokens: int, temperature: float
+        self,
+        *,
+        model_id: str,
+        system: str,
+        user: str,
+        max_tokens: int,
+        temperature: float,
+        metadata: dict[str, str] | None = None,
     ) -> tuple[str, int, int, int]:
-        response = self._client.converse(
-            modelId=model_id,
-            system=[{"text": system}, {"cachePoint": {"type": "default"}}],
-            messages=[{"role": "user", "content": [{"text": user}]}],
-            inferenceConfig={"maxTokens": max_tokens, "temperature": temperature},
-        )
+        kwargs: dict[str, Any] = {
+            "modelId": model_id,
+            "system": [{"text": system}, {"cachePoint": {"type": "default"}}],
+            "messages": [{"role": "user", "content": [{"text": user}]}],
+            "inferenceConfig": {"maxTokens": max_tokens, "temperature": temperature},
+        }
+        if metadata:
+            # Recorded in Bedrock's model invocation logs, so a CloudWatch Logs Insights
+            # query can break an incident's spend down *per agent* rather than showing
+            # one undifferentiated pile of calls. Ignored by Bedrock when invocation
+            # logging is off, so this is safe whether or not it has been enabled.
+            kwargs["requestMetadata"] = metadata
+        response = self._client.converse(**kwargs)
         blocks = response.get("output", {}).get("message", {}).get("content", [])
         text = "".join(b.get("text", "") for b in blocks)
         usage = response.get("usage", {}) or {}
@@ -165,6 +179,22 @@ class BedrockBackend:
 # --------------------------------------------------------------------------- #
 # Reasoner
 # --------------------------------------------------------------------------- #
+
+#: Bedrock rejects a request whose metadata falls outside its allowed character set,
+#: and a rejected call mid-demo is a far worse outcome than a missing log tag. So the
+#: values are sanitised rather than trusted: anything unexpected is stripped, not sent.
+_METADATA_SAFE = re.compile(r"[^A-Za-z0-9 _.:/=+@-]")
+
+
+def _request_metadata(*, incident: str, agent: str, attempt: int) -> dict[str, str]:
+    """Tags carried into Bedrock's invocation logs. At most 16 pairs, 256 chars each."""
+    pairs = {"incident": incident, "agent": agent, "attempt": str(attempt)}
+    return {
+        key: _METADATA_SAFE.sub("", value)[:256]
+        for key, value in pairs.items()
+        if value and _METADATA_SAFE.sub("", value)
+    }
+
 
 _REPAIR_HINT = (
     "\n\nYour previous reply could not be parsed into the required schema.\n"
@@ -182,10 +212,12 @@ class Reasoner:
         settings: Settings,
         ledger: BudgetLedger,
         trace: TraceBus | None = None,
+        incident_id: str = "",
     ) -> None:
         self.settings = settings
         self.ledger = ledger
         self.trace = trace
+        self.incident_id = incident_id
         self._bedrock: BedrockBackend | None = None
 
     # -- backend selection -------------------------------------------------- #
@@ -247,6 +279,9 @@ class Reasoner:
                     user=prompt,
                     max_tokens=tier.max_tokens,
                     temperature=tier.temperature,
+                    metadata=_request_metadata(
+                        incident=self.incident_id, agent=role.value, attempt=attempt
+                    ),
                 )
             except Exception as exc:  # throttling, access denied, network
                 latency = int((time.perf_counter() - started) * 1000)
