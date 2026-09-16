@@ -8,10 +8,6 @@ Command-line entry point.
     python -m aegis.cli run --all --report         write the HTML trace
     python -m aegis.cli graph                      print the graph as Mermaid
 
-The live output is the demo. It shows the hand-offs as they happen, so a reviewer can
-watch triage fold ten alerts into one incident, four specialists disagree, the RCA
-agent decide it needs another round, and the business gate refuse to release technical
-detail until a human says so.
 """
 
 from __future__ import annotations
@@ -33,8 +29,8 @@ from .config import Settings, load_settings
 from .contracts import IncidentOutcome, IncidentState
 from .graph import build_graph, build_runtime, run_incident
 from .platform import SimulatedPlatform, load_scenario
-from .precedent import PrecedentStore
 from .platform.scenarios import ALL_SCENARIOS, SCENARIOS_BY_KEY
+from .precedent import PrecedentStore
 
 console = Console()
 

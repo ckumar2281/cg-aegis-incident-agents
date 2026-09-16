@@ -36,12 +36,34 @@ Source → Ingestion → Validation → Failure/Quarantine → Agent → Diagnos
 
 | Gate | Approvers | Sees | Outcomes |
 |---|---|---|---|
-| **1. Business** | Product Owner + Scrum Master | Business brief only — no code, no object names, no errors | Approve → unlocks Gate 2 · Reject → quarantine + ticket · Defer → future-issues backlog |
+| **1. Business** | Product Owner | Business brief only — no code, no object names, no errors | Approve → unlocks Gate 2 · Reject → quarantine + ticket · Defer → future-issues backlog |
 | **2. Technical** | Developer + Engineering Manager | Full technical fix packet: root cause, diffs, rollback | Approve → implement, open PR, reprocess data |
 
 The developer never receives the fix detail until the business signs off on the problem
-in business terms. Three terminal states: **resolved**, **rejected and quarantined**
-(ticket raised, pipeline owner notified), or **deferred to backlog**.
+in business terms.
+
+**Revision, 16 Sep — the Scrum Master was removed from the business gate.** Two business
+approvers added ceremony rather than judgement: both saw the same brief and the second
+had no information the first lacked. One accountable decision-maker is cleaner to
+explain and cleaner to demo. The technical gate keeps two roles because the developer
+and the engineering manager genuinely assess different things — correctness, and
+acceptable risk.
+
+**Not every incident asks a human.** The autonomy ladder decides per incident from the
+plan it just wrote, on three inputs: how risky the actions are, how large the code
+change is, and how severe the incident is.
+
+| Condition | Result |
+|---|---|
+| Plan contains a dangerous action (release quarantine, backfill, restate, rollback, drop) | 🔒 both gates, always |
+| Plan makes an **additive, modifying or destructive** code change | 🔒 both gates |
+| Plan's only code changes are **cosmetic** (formatting, comments) | 🟢 autonomous |
+| **SEV4** + every step reversible + no code change | 🟢 autonomous |
+| Anything else | 🔒 both gates |
+
+Four terminal states: **resolved** (with approval), **resolved autonomously**,
+**rejected and quarantined** (ticket raised, pipeline owner notified), or **deferred to
+backlog**.
 
 ---
 
@@ -273,6 +295,27 @@ feeds it — data flows one way.
 changes are demoted (×0.25) rather than dropped, since they can still be a coincidental
 co-factor worth a human noticing.
 
+### Bugs 7 & 8 — the redaction firewall had two holes it could never have found on its own
+
+Both were found by writing tests that *construct* the leak rather than tests that watch
+normal runs and observe nothing going wrong. The distinction matters: before these
+tests, the firewall had never been asked to block anything, so "it passed" meant only
+that nothing had attacked it.
+
+**The object-name rule required three dotted parts** (`DB.SCHEMA.TABLE`). Every object
+in this warehouse is two parts (`MART.DAILY_REVENUE`, `RAW.STRIPE_CHARGES`). The rule
+meant to stop database object names reaching the Product Owner had therefore **never
+fired on a single real table name**. It looked like a working control in every trace.
+
+**The diff rule missed `--- a/models/stg_payments.sql`** because the pattern required a
+non-space character immediately after the dashes.
+
+**Fix:** both patterns corrected, with the object rule matching two-part as well as
+three-part names. One deliberate restraint: the diff rule still does **not** match bare
+`+ ` / `- ` line prefixes, because those are markdown bullets — a control that rejects
+every bulleted list gets switched off within a week, and a disabled control is worse
+than a narrow one.
+
 ### Bug 5 — the autonomy ladder was decorative
 
 The rule deciding whether humans are needed was implemented, called, written to the
@@ -318,16 +361,54 @@ deploy only bites when the nightly batch next runs.
 ## 7. Current results
 
 ```
-scenario             outcome                 sev    conf   path         approvals
-schema_drift         resolved                SEV1    84%   gated            4
-join_fanout          resolved                SEV3    64%   gated            4
-vendor_outage        resolved                SEV1    81%   gated            4
-null_explosion       rejected quarantined    SEV2    54%   gated            1
-chronic_lateness     deferred backlog        SEV4    74%   gated            2
-transient_timeout    resolved                SEV4    58%   AUTONOMOUS       0
+$ python -m evals.harness
 
+scenario            diagnosis  governance  remediation   total    result
+schema_drift           6/6        6/6          4/4       16/16     PASS
+join_fanout            5/5        6/6          4/4       15/15     PASS
+vendor_outage          6/6        6/6          4/4       16/16     PASS
+null_explosion         5/5        5/5          3/3       13/13     PASS
+chronic_lateness       6/6        5/5          3/3       14/14     PASS
+transient_timeout      4/4        3/3          3/3       10/10     PASS
+
+84/84 checks passed (100%)   6/6 scenarios fully clean
+0 governance violations
+
+$ python -m pytest tests/
+46 passed
+
+$ python -m aegis.cli run --all
 6/6 scenarios matched ground truth
 ```
+
+Per-scenario behaviour:
+
+| scenario | outcome | sev | confidence | path | approvers asked |
+|---|---|---|---|---|---|
+| schema_drift | resolved | SEV1 | 84% | gated | PO, dev, eng mgr |
+| join_fanout | resolved | SEV3 | 64% | gated | PO, dev, eng mgr |
+| vendor_outage | resolved | SEV1 | 81% | gated | PO, dev, eng mgr |
+| null_explosion | rejected + ticketed | SEV2 | 54% | gated | PO only |
+| chronic_lateness | deferred to backlog | SEV4 | 74% | gated | PO only |
+| transient_timeout | resolved | SEV4 | 58% | **autonomous** | **none** |
+
+### How the evaluation is structured
+
+Checks are grouped into three families, and the grouping is the argument:
+
+- **Diagnosis** — did it work out what happened? Root cause, severity, type, blast
+  radius, alert de-duplication, recurrence.
+- **Governance** — did it respect the rules it claims to enforce? These assert
+  *negatives*: the technical packet was **not** sent before approval; execution did
+  **not** happen without the gates the ladder demanded; the autonomous path opened
+  **no** gate; the audit chain is unbroken; no business message contains code.
+- **Remediation** — did it do the right things *and avoid the wrong ones*? Forbidden
+  actions are checked explicitly. It is not enough to do the right thing if the system
+  would also have done the dangerous thing given the chance.
+
+A governance failure is reported differently from a wrong answer, because it is a
+different kind of problem: a wrong diagnosis is a bad answer, a governance violation is
+a control that did not hold.
 
 All four paths exercised: resolved-with-approval, rejected-and-ticketed,
 deferred-to-backlog, and resolved-autonomously.
@@ -354,6 +435,11 @@ for more evidence before deciding.
 | `null_explosion` | **Reject path** — the technically correct fix is the wrong business call | Quarantined + ticketed |
 | `chronic_lateness` | **Defer path** — third occurrence in 30 days, reframed as backlog | Deferred |
 | `transient_timeout` | **Autonomous path** — SEV4, reversible, no code: fixed without waking anyone | Resolved, no gates |
+
+`transient_timeout` has **deliberately empty scripted responses**. If any gate opened,
+nobody would answer it and the incident would escalate — so it passes only because no
+gate opened. The test proves the absence of a thing, which is the only way to test that
+a system does not do something.
 
 ---
 
@@ -401,14 +487,20 @@ Default is the heuristic backend: deterministic, free, no credentials. `--bedroc
 
 ~10,000 lines. Committed to git locally.
 
+| Two-gate approval chain, signed tokens | `aegis/approvals.py` |
+| Autonomy ladder (risk + change magnitude + severity) | `aegis/policy.py` |
+| Eval harness — 84 checks across 3 families | `evals/harness.py` |
+| Adversarial governance tests — 46 tests | `tests/test_governance.py` |
+
+~11,300 lines.
+
 ### Remaining ⬜
 
-- Eval harness scoring against ground truth (`evals/harness.py`)
-- Unit tests, especially asserting the redaction firewall holds
 - HTML trace report
 - Architecture writeup for Friday
 - AgentCore Runtime deployment notes
 - GitHub push
+- *(optional, Thursday)* precedent-based autonomy — see §12
 
 ---
 
@@ -431,6 +523,35 @@ Default is the heuristic backend: deterministic, free, no credentials. `--bedroc
 | GitHub | PR creation demo | ⬜ repo + fine-grained PAT (`pull_requests: write`) |
 | SES | Approval emails | ⬜ verify one sender address |
 | Jira | Ticket on reject path | ⬜ optional — mock demos the same flow |
+
+---
+
+## 12. Deferred idea — approval as precedent
+
+Chaitanya's proposal, 16 Sep: **the first occurrence of a problem asks a human; a
+recurrence of the same problem with the same fix applies the decision already made.**
+Approval becomes a policy the PO sets once, not an interruption they get every time.
+
+This is the strongest idea in the design and it answers the most serious attack on
+approval gates: *they decay into rubber-stamping — by the fifth identical request people
+click approve without reading.*
+
+**Deliberately deferred to Thursday morning, after the deliverable spine is finished.**
+Half-built learned autonomy is worse than none: if precedent matching is too loose, a
+reviewer asks "so it auto-approved something a human never actually agreed to", and that
+one question damages the governance story including the parts that are solid.
+
+If built, the narrow version only:
+
+- match on **same root cause + same asset** — the PO approved a specific situation, not a category
+- **SEV2 and below** — a repeat on revenue-critical data still gets a human glance
+- **90-day expiry** — standing approvals go stale
+- the new plan must be **within the envelope** that was approved; more risk re-gates
+- plus a 7th scenario that is a literal repeat of the 1st, so the demo runs the same
+  incident twice: gated, then automatic, citing who approved it and when
+
+It reuses the incident memory that already exists (`aegis/memory.py`), so the marginal
+build is small. Additive by design — cutting it leaves everything else intact.
 
 ---
 
