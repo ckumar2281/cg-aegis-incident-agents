@@ -14,9 +14,11 @@ the objects the agents actually query in production:
 * a change log (dbt deploys, config edits, vendor notices)
 * consumer access (ACCESS_HISTORY -- who actually reads each asset)
 
-`SnowflakePlatform` in snowflake_client.py implements the same interface against a
-real account. The agents cannot tell the difference, which is the point: the
-simulation is a test fixture, not a shortcut in the architecture.
+The agents reach this only through the `PlatformClient` protocol in client.py, never
+directly. A Snowflake-backed implementation of that same protocol would drop in without
+the agent layer changing -- but it is not written yet, so the simulation is currently
+the only implementation. It is a test fixture standing in for a real backend, not a
+shortcut around one.
 """
 
 from __future__ import annotations

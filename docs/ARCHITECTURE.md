@@ -108,6 +108,35 @@ better but cannot make the output unsafe by writing something worse.
 > Two of these rules were **broken and looked fine** until adversarial tests were
 > written. See §7 — it is the most instructive thing in this document.
 
+### Approval as precedent
+
+The strongest criticism of any approval gate is that it decays. By the fifth identical
+request people click approve without reading, and the control provides the *appearance*
+of oversight rather than oversight. Adding more gates makes this worse.
+
+Aegis treats an approval as a **standing decision about a class of situation**. The first
+occurrence asks a human; a recurrence with the same fix applies the decision already
+made, and names whose it was. The Product Owner's attention is spent on novel judgements
+rather than repeated ones.
+
+Safe only because the boundaries are narrow:
+
+| Boundary | Rule |
+|---|---|
+| Scope | Same root cause **and** same asset. Approving a drift on the marketing feed does not authorise one on payments |
+| Severity | SEV1 is never covered, however familiar it looks |
+| Actions | `rollback_deployment`, `restate_table`, `drop_table`, `force_merge_pr` are never pre-authorisable |
+| Envelope | The new plan must fit inside what was approved — no extra actions, no higher risk tier, no larger code change |
+| Lifetime | 90-day expiry, revocable at any time |
+
+Every application is audited citing the precedent and the person who set it, so *"the
+system did this on its own"* is never the whole answer — there is always a named human
+and a date behind it. When a precedent exists but does **not** cover the plan, that is
+traced too, because silence would be indistinguishable from there never having been one.
+
+The boundaries are the entire value of the feature, so the tests attack them:
+`tests/test_precedent.py` is 22 tests of which almost all assert a **refusal**.
+
 ### Autonomy proportional to risk
 
 Gates are not the opposite of autonomy. Waking four people to approve re-running a
@@ -120,10 +149,11 @@ failed task is how an approval process gets ignored. The ladder decides per inci
 | Plan makes an **additive, modifying or destructive** code change | 🔒 both gates |
 | Plan's only code changes are **cosmetic** | 🟢 autonomous |
 | **SEV4** + all steps reversible + no code change | 🟢 autonomous |
+| A live **precedent** covers this exact situation | 🟢 autonomous, attributed to the approver |
 | Anything else | 🔒 both gates |
 
-Three inputs: how risky the actions are, how large the change is, how severe the
-incident is. The decision and its reasoning are written to the trace and the audit
+Four inputs: how risky the actions are, how large the change is, how severe the incident
+is, and whether a human has already ruled on this exact case. The decision and its reasoning are written to the trace and the audit
 chain, so the system explains *why* it did or did not ask.
 
 ### Four terminal states
@@ -131,7 +161,7 @@ chain, so the system explains *why* it did or did not ask.
 | State | What happened |
 |---|---|
 | **Resolved** | Both gates approved. Data remediated and verified, PR opened |
-| **Resolved autonomously** | The ladder granted autonomy. Executed, verified, owner notified afterwards |
+| **Resolved autonomously** | The ladder granted autonomy, or a standing approval covered it. Executed, verified, owner notified afterwards |
 | **Rejected and quarantined** | Business declined. Data stays held, ticket raised, pipeline owner notified |
 | **Deferred to backlog** | Parked as a future fix with the high-level change captured |
 
@@ -377,11 +407,11 @@ list gets switched off within a week, and a disabled control is worse than a nar
 
 ```
 $ python -m evals.harness
-84/84 checks passed (100%)   6/6 scenarios fully clean
+112/112 checks passed (100%)   8/8 scenarios fully clean
 0 governance violations
 
 $ python -m pytest tests/
-46 passed
+68 passed
 ```
 
 | Scenario | Tests | Outcome | Sev | Confidence | Path |
@@ -392,6 +422,8 @@ $ python -m pytest tests/
 | `null_explosion` | **Reject path** — the technically correct fix is the wrong business call | quarantined + ticketed | SEV2 | 54% | gated |
 | `chronic_lateness` | **Defer path** — third occurrence in 30 days | backlog | SEV4 | 74% | gated |
 | `transient_timeout` | **Autonomous path** — reversible, no code, nobody woken | resolved | SEV4 | 58% | **no gates** |
+| `ad_spend_drift` | Ordinary approve path that records a standing decision | resolved | SEV3 | 85% | gated |
+| `ad_spend_drift_repeat` | **Precedent path** — same problem 3 weeks on, nobody asked | resolved | SEV3 | 85% | **no gates** |
 
 The confidence gate does real work: three scenarios proceed on round one, three loop for
 more evidence before deciding.
@@ -423,10 +455,15 @@ opened — the test proves the absence of a thing.
 Stated plainly, because a POC that claims no weaknesses invites someone to find them for
 you.
 
-- **The platform is simulated.** A 33-asset warehouse with deterministic lineage, task
-  history and metrics. The `PlatformClient` interface is written so a Snowflake-backed
-  implementation drops in unchanged, but that implementation is **unverified against a
-  live account**.
+- **The platform is simulated, and the Snowflake backend is not written.** A 33-asset
+  warehouse with deterministic lineage, task history and metrics stands in for the real
+  thing. The `PlatformClient` protocol defines the seam a Snowflake implementation would
+  fill — the agents call only that interface, never the simulation directly — but **no
+  `SnowflakePlatform` class exists yet**. `AEGIS_PLATFORM=snowflake` is config for
+  something not yet built. The queries it would issue are known
+  (`ACCOUNT_USAGE.TASK_HISTORY`, `COPY_HISTORY`, `DATA_QUALITY_MONITORING_RESULTS`,
+  Horizon lineage); writing and verifying them against a live account is the next step,
+  not a finished one.
 - **Approvals resolve synchronously in the demo.** Real asynchronous operation —
   emails out, incident suspended, resumed by a signed callback — is designed
   (`PendingResponder`, signed single-use tokens) but the callback endpoint is not built.
@@ -446,15 +483,14 @@ you.
 
 ## 10. What I would build next
 
-1. **Approval as precedent** — first occurrence asks a human, recurrence applies the
-   decision already made. Approval becomes a policy set once rather than an interruption
-   received every time. This is the strongest remaining idea and the main answer to
-   *"approval gates decay into rubber-stamping"*. Design is in `PROJECT-LOG.md` §12.
-2. **Live Snowflake backend** — the interface exists; this is implementation, not design.
+1. **Live Snowflake backend** — the interface exists; this is implementation, not design.
 3. **Asynchronous approval callbacks** — API Gateway + Lambda validating the signed
    tokens that already exist.
 4. **Blast-radius-aware comms** — notify affected *consumers*, not just owners. The
    lineage data is already there.
+4. **Precedent review surface** — a page listing live standing approvals with their
+   envelopes and expiry, so a Product Owner can see what they have authorised and revoke
+   any of it. The store supports revocation; nothing surfaces it yet.
 
 ---
 

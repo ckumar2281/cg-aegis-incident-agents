@@ -4,9 +4,11 @@
 
 Aegis detects a data pipeline incident, investigates it with a team of specialised
 agents, works out what actually broke, proposes a fix — and then refuses to touch
-anything until two separate groups of humans have approved, in a specific order.
+anything until the right humans have approved, in a specific order, having seen
+specific things.
 
-That ordering is the point of the system.
+That ordering is the point of the system. And once a human has ruled on a situation,
+it stops asking.
 
 ---
 
@@ -38,7 +40,7 @@ So the approval chain runs in an unusual order:
                                        ▼
               ┌────────────────────────────────────────────────┐
               │ GATE 1 — BUSINESS                              │
-              │ Product Owner + Scrum Master                   │
+              │ Product Owner                                  │
               │ see: plain-language brief ONLY                 │
               │      no code, no table names, no errors        │
               └───┬──────────────┬─────────────────┬───────────┘
@@ -63,6 +65,12 @@ So the approval chain runs in an unusual order:
 ```
 
 **The developer does not receive the fix until the business has approved the problem.**
+
+And not every incident asks. The autonomy ladder decides per incident from four inputs:
+how risky the actions are, how large the code change is, how severe the incident is, and
+**whether a human has already ruled on this exact case**. A SEV4 retry runs unsupervised.
+A recurrence of a problem the Product Owner approved three weeks ago runs too — citing
+their decision by name and date.
 
 This means the business decision gets made on business grounds rather than deferred to
 whoever understands the diff; an engineer cannot be leaned on to ship a fix the
@@ -91,6 +99,11 @@ Because the work genuinely decomposes, and the decomposition buys something meas
 | **Remediation planner** | Risk-tiered data steps + a code fix for the PR | Data and code are repaired differently, on different clocks |
 | **Disclosure officer** | One verdict → two audiences, redaction enforced | The governance core |
 | **Executor / verifier** | Act, verify recovery, roll back on failure | Separation from planning means the plan is reviewable before anything runs |
+
+Behind them sit three governance components that are not agents and deliberately not
+model-driven: the **redaction firewall** (13 machine-checked rules), the **autonomy
+ladder** (when humans are needed), and the **precedent store** (what a human already
+decided).
 
 The four specialists run in parallel and **deliberately overlap only a little**. When
 the quality analyst and the change correlator reach the same conclusion from different
@@ -137,9 +150,20 @@ warehouse with a deterministic reasoner:
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-python -m aegis.cli run schema_drift        # one incident, end to end
-python -m aegis.cli run --all               # all five scenarios
-python -m evals.harness                     # score against ground truth
+python -m aegis.cli list                    # the scenarios
+python -m aegis.cli run schema_drift        # one incident, live trace
+python -m aegis.cli run --all --report      # whole suite + HTML trace report
+python -m aegis.cli run null_explosion -i   # you play the Product Owner
+python -m evals.harness                     # 112 checks against ground truth
+python -m pytest tests/                     # 68 governance tests
+```
+
+Current state:
+
+```
+8/8 scenarios matched ground truth
+112/112 eval checks passed · 0 governance violations
+68 tests passed
 ```
 
 To use real Claude models:
@@ -185,30 +209,43 @@ every call as it makes it.
 
 No vector database. Incident memory is a small explainable similarity function — no
 infrastructure, no idle cost, and you can see *why* two incidents were judged similar.
+It also sidesteps a trap: Bedrock Knowledge Bases default to an OpenSearch Serverless
+vector store with a 2-OCU minimum, roughly **$345/month at zero queries**.
 
 ---
 
-## The five scenarios
+## The eight scenarios
 
 | Key | What it tests | Ends as |
 |---|---|---|
-| `schema_drift` | Full happy path — vendor renames a column mid-close | Resolved |
+| `schema_drift` | Full approve path — vendor renames a column mid-close | Resolved |
 | `join_fanout` | Silent corruption — nothing failed, the numbers are just wrong | Resolved |
 | `vendor_outage` | Alert-storm de-duplication — 10 alerts, 1 incident | Resolved |
 | `null_explosion` | **Reject path** — the technically correct fix is the wrong business call | Quarantined + ticketed |
 | `chronic_lateness` | **Defer path** — third occurrence in 30 days, reframed as a backlog item | Deferred |
+| `transient_timeout` | **Autonomous path** — reversible, no code, nobody woken | Resolved, no gates |
+| `ad_spend_drift` | Ordinary approve path that records a standing decision | Resolved |
+| `ad_spend_drift_repeat` | **Precedent path** — same problem 3 weeks on, nobody asked | Resolved, no gates |
 
 Each declares a ground truth the eval harness scores against: root cause, severity,
 blast radius, alert de-duplication, and whether forbidden actions were avoided.
+
+Two of them prove a *negative*. `transient_timeout` and `ad_spend_drift_repeat` have
+deliberately empty scripted approvals — if any gate opened, nobody would answer and the
+incident would escalate. They pass only because no gate opened.
 
 ---
 
 ## Stack
 
-Python 3.10+ · LangGraph · Pydantic v2 · Amazon Bedrock (Claude) · Snowflake · S3
+Python 3.10+ · LangGraph · Pydantic v2 · Amazon Bedrock (Claude)
 
-Runs locally against real services. `docs/` covers the AWS setup and the AgentCore
-Runtime deployment path.
+Bedrock is wired and runs for real with `--bedrock`. The data platform is **simulated** —
+a Snowflake backend would implement the same `PlatformClient` protocol but is not written
+yet. The integrations (SES, Jira, ServiceNow, GitHub) have real adapters and run mocked
+until credentials are supplied.
+
+`docs/` covers the AWS setup, the architecture, and the AgentCore deployment path.
 
 ---
 
@@ -219,13 +256,27 @@ aegis/
   contracts.py     typed hand-off contracts -- read this first
   config.py        settings + cost governor
   policy.py        redaction firewall, autonomy ladder, severity scoring
+  precedent.py     approval as a standing decision
   audit.py         hash-chained audit trail + trace bus
   reasoning.py     Bedrock / heuristic reasoning layer
   memory.py        incident memory and recurrence detection
   tools.py         provenance-recording tool belt
-  platform/        simulated + real Snowflake backends, scenarios
+  graph.py         LangGraph orchestration
+  report.py        self-contained HTML trace report
+  platform/        the simulated warehouse and its scenarios
   agents/          the nine agents
-evals/             ground-truth scoring harness
+evals/harness.py   ground-truth scoring, 112 checks
+tests/             adversarial governance tests, 68 of them
 scripts/           setup and preflight utilities
-docs/              AWS setup, architecture, deployment
+docs/              see below
 ```
+
+## Documentation
+
+| File | What it covers |
+|---|---|
+| [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) | The design, the hand-off contracts, the confidence-gate arithmetic, **§7: eight defects found during the build**, and stated limitations |
+| [`DEMO-GUIDE.md`](docs/DEMO-GUIDE.md) | How to run and present it, with honest answers to hard questions |
+| [`DEPLOYMENT.md`](docs/DEPLOYMENT.md) | The AgentCore path, and the one part that is a real architectural change |
+| [`AWS-SETUP.md`](docs/AWS-SETUP.md) | Reproducible Bedrock setup in ~10 minutes |
+| [`PROJECT-LOG.md`](docs/PROJECT-LOG.md) | Build history, every decision and every defect |

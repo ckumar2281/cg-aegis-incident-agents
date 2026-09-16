@@ -1,0 +1,257 @@
+# Deploying Aegis to AWS
+
+What changes between `python -m aegis.cli` on a laptop and a system that runs
+unattended against a live warehouse.
+
+This is a design note, not a claim: **none of it is deployed.** The POC runs locally
+against real Bedrock and a simulated platform. What follows is the honest shape of the
+production path, including the one part that is a genuine architectural change rather
+than packaging.
+
+---
+
+## 1. What already survives the move
+
+Most of the system does not care where it runs. The agent graph, the contracts, the
+governance policy, the hash chain and the cost governor are all pure Python over
+interfaces. Three seams were built for this — though only one of them currently has a
+real implementation behind it (Bedrock). The others have the seam and the mock; the
+production adapter is written for the integrations and **not yet written** for
+Snowflake.
+
+| Seam | Local today | Deployed |
+|---|---|---|
+| `PlatformClient` | `SimulatedPlatform` over a seeded world | `SnowflakePlatform` over `ACCOUNT_USAGE` and `INFORMATION_SCHEMA` — **not yet written** |
+| `ModelClient` | Bedrock via boto3, or the heuristic backend | Unchanged — Bedrock either way |
+| `EmailSink` / `TicketSink` / `VcsClient` | Mock adapters | SES, Jira/ServiceNow, GitHub |
+| `Responder` | `ScriptedResponder` / `ConsoleResponder` | `PendingResponder` + a callback endpoint |
+
+The last row is the one that is not just configuration. See §4.
+
+---
+
+## 2. The container
+
+AgentCore Runtime takes an OCI image and expects a specific contract. Following AWS's
+own multi-agent SRE reference implementation:
+
+- **ARM64** — `--platform=linux/arm64`, not optional
+- **Python 3.12**
+- An HTTP server on **port 8080**
+- OpenTelemetry instrumentation in the start command, which is what populates
+  AgentCore Observability in CloudWatch
+
+```dockerfile
+FROM --platform=linux/arm64 ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+
+WORKDIR /app
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev
+
+COPY aegis/ ./aegis/
+
+EXPOSE 8080
+CMD ["uv", "run", "opentelemetry-instrument", \
+     "uvicorn", "aegis.runtime:app", "--host", "0.0.0.0", "--port", "8080"]
+```
+
+The only new code is `aegis/runtime.py` — a thin FastAPI wrapper that accepts an
+incident payload, calls `run_incident`, and returns the `IncidentOutcome`. Perhaps
+sixty lines. Nothing in the agent layer changes.
+
+```python
+response = client.create_agent_runtime(
+    agentRuntimeName="aegis",
+    agentRuntimeArtifact={"containerConfiguration": {"containerUri": ecr_uri}},
+    networkConfiguration={"networkMode": "PUBLIC"},
+    roleArn=role_arn,
+    environmentVariables={"AEGIS_PLATFORM": "snowflake", "AEGIS_MODEL_BACKEND": "bedrock"},
+)
+```
+
+Invocation carries a session id, which is what makes a suspended incident resumable:
+
+```python
+client.invoke_agent_runtime(
+    agentRuntimeArn=runtime_arn,
+    runtimeSessionId=incident_id,
+    payload=json.dumps({"input": {"alerts": [...], "file": {...}}}),
+)
+```
+
+---
+
+## 3. What triggers it
+
+Today a scenario is loaded from a fixture. In production the trigger is the platform
+itself:
+
+```
+Snowpipe / dbt test failure
+Snowflake alert  ──▶  SNS topic  ──▶  Lambda  ──▶  invoke_agent_runtime
+DMF threshold breach                              (runtimeSessionId = incident id)
+Freshness monitor
+```
+
+The Lambda does no thinking. It normalises the alert into the `Alert` contract and
+invokes the runtime. Triage does the correlation, which is deliberate: alert
+de-duplication needs lineage, and lineage lives in the agent layer.
+
+**Containment stays outside the agents.** The S3 quarantine move is a bucket
+notification plus a Lambda, and it must keep working whether or not the agent system is
+healthy. An incident-response system that becomes a dependency of your data safety has
+the relationship the wrong way round.
+
+---
+
+## 4. The real change: approvals become asynchronous
+
+Everything above is packaging. This is architecture.
+
+Today the `ApprovalCoordinator` asks a `Responder` and gets an answer in the same call
+stack. That is honest for a demo and wrong for production, where a Product Owner might
+answer in four hours or not at all.
+
+The production shape:
+
+```
+plan → disclose → send approval emails → SUSPEND the graph
+                                              │
+                        (hours pass; the container is not running)
+                                              │
+   PO clicks a signed link → API Gateway → Lambda → verify token
+                                              │
+                                     RESUME the graph from the gate node
+```
+
+Three things already exist for this:
+
+- **`PendingResponder`** returns `None` for everyone, which resolves every gate as
+  `TIMEOUT`. That is the correct suspend semantics — a timeout escalates, it never
+  silently approves.
+- **Signed, single-use, expiring tokens.** `TokenMinter` already mints an HMAC over
+  incident, gate, role and expiry, and burns the token on use. The callback Lambda
+  validates with the same code.
+- **The audit chain** is already append-only and serialisable, so incident state can be
+  rebuilt.
+
+Two things do not:
+
+- **Graph checkpointing.** LangGraph supports persistent checkpointers; Aegis currently
+  compiles without one because every run completes in-process. Production needs a
+  checkpointer (DynamoDB or Postgres) keyed on `incident_id` so `business_gate` can be
+  resumed rather than replayed.
+- **The callback endpoint.** API Gateway + Lambda: validate the token, record the
+  verdict, resume the graph. Small, but it is the piece that turns the demo into a
+  system.
+
+**Why this is not hand-waving:** the gate nodes already return a `GateOutcome` and route
+on it. Suspending means persisting state at that node instead of calling a responder
+inline. The graph topology does not change at all.
+
+---
+
+## 5. AgentCore components, and which are worth it
+
+| Component | Use it? | Why |
+|---|---|---|
+| **Runtime** | Yes | Serverless, session-isolated, scales from zero. The natural home |
+| **Observability** | Yes | OTel traces into CloudWatch. Aegis already emits a structured `TraceBus`; this is where it lands |
+| **Identity** | Yes | Cognito JWT for the approval callback. Approval links must be authenticated, not merely unguessable |
+| **Gateway** | Probably not | Turns OpenAPI specs into MCP tools. Aegis's tools are a typed Python layer over Snowflake and S3, not HTTP APIs. Gateway would add a hop and a JWT dance to reach a database it can already reach. Worth it only if the tools become services shared with other agents |
+| **Memory** | Partially | See below |
+| **Code Interpreter** | No | Nothing here needs sandboxed code execution |
+
+### On Memory specifically
+
+AgentCore Memory offers namespace-routed strategies — user preferences, domain
+knowledge, session summaries. Aegis has two stores that look superficially similar and
+are not:
+
+- **`IncidentMemory`** — past incidents for recurrence detection. A reasonable fit for
+  AgentCore Memory, and it would survive container restarts, which the in-process
+  version does not.
+- **`PrecedentStore`** — standing approvals. **This should not go in agent memory.** A
+  precedent is a governance record: it authorises action, it is legally interesting, and
+  it must be queryable, auditable and revocable by a human who will never look at an
+  agent memory namespace. It belongs in Snowflake next to the audit chain, with a
+  proper table and a review surface.
+
+That distinction is worth stating plainly because the two stores are the same shape and
+it would be easy to put both in the convenient place.
+
+---
+
+## 6. Where state lives
+
+| State | Today | Deployed |
+|---|---|---|
+| Audit chain | In-process, verified at close | `AEGIS.OPS.INCIDENT_AUDIT` in Snowflake, append-only, hash chain intact across restarts |
+| Precedents | In-process, optional JSON file | `AEGIS.OPS.PRECEDENTS` — a governance record, not a cache |
+| Incident memory | In-process, seeded | AgentCore Memory, or a Snowflake table |
+| Backlog | `runs/backlog.json` | Jira, which is where a backlog already lives |
+| Graph state | In-process | Checkpointer keyed on incident id |
+
+`AuditChain.to_rows()` already emits the Snowflake shape. That was not an accident.
+
+---
+
+## 7. Cost at production volume
+
+Measured: **$0.132 per incident** on the current model pair.
+
+| Volume | Bedrock | AgentCore Runtime |
+|---|---|---|
+| 10 incidents/day | ~$40/month | scales from zero; cost dominated by session duration |
+| 50 incidents/day | ~$200/month | as above |
+
+Two warnings that apply specifically to a deployed agent system:
+
+**AgentCore Runtime bills session memory per second while a session is alive, including
+idle.** The default idle timeout is 15 minutes. An incident that suspends waiting for a
+Product Owner must **not** hold a live session for four hours — which is another reason
+the approval flow has to be genuinely asynchronous rather than a long-running wait. Set
+`idleRuntimeSessionTimeout` deliberately.
+
+**The per-incident budget governor matters more, not less, in production.** Locally a
+runaway loop costs cents. At scale it costs attention and money. The ceiling and the
+honest `degraded_reasoning` marker should stay exactly as they are.
+
+---
+
+## 8. What I would not move
+
+The deterministic core stays in the container and stays deterministic: severity scoring,
+hypothesis arithmetic, the redaction firewall, the autonomy ladder, precedent matching.
+
+These are the parts a reviewer or an auditor needs to be able to reproduce without
+re-running a model, and moving them behind a managed service — or letting a model do
+them because a managed service makes that convenient — would trade the system's main
+property for marginal convenience.
+
+---
+
+## 9. Order of work
+
+1. **Write `SnowflakePlatform`** and verify it against a trial account. The protocol
+   exists and the agents call only through it, so nothing above this layer changes — but
+   the implementation itself does not exist yet
+2. `aegis/runtime.py` FastAPI wrapper + Dockerfile + push to ECR
+3. Graph checkpointer, then the approval callback Lambda — the two together are what
+   make the approval chain real
+4. Audit chain and precedents persisted to Snowflake
+5. SNS/Lambda trigger from Snowflake alerts
+6. AgentCore Runtime deploy, Observability on, `idleRuntimeSessionTimeout` tuned
+
+Steps 1–2 are a day. Step 3 is the interesting one and worth doing carefully, because
+an approval system that loses a pending decision on restart is worse than no approval
+system.
+
+---
+
+## Sources
+
+- [Build multi-agent SRE assistants with Amazon Bedrock AgentCore](https://aws.amazon.com/blogs/machine-learning/build-multi-agent-site-reliability-engineering-assistants-with-amazon-bedrock-agentcore/) — the reference implementation this container contract follows
+- [AgentCore Runtime: get started without the CLI](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/getting-started-custom.html)
+- [AgentCore starter toolkit](https://aws.github.io/bedrock-agentcore-starter-toolkit/examples/agentcore-quickstart-example.html)
+- [Inference profile prerequisites and IAM](https://docs.aws.amazon.com/bedrock/latest/userguide/inference-profiles-prereq.html)

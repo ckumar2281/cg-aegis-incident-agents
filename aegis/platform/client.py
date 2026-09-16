@@ -42,7 +42,14 @@ class HealthCheck:
 
 
 class PlatformClient(Protocol):
-    """Implemented by SimulatedPlatform and SnowflakePlatform alike."""
+    """
+    The seam between the agent layer and reality.
+
+    `SimulatedPlatform` below is the only implementation today. A Snowflake-backed one
+    would implement this same protocol -- the agents call nothing else -- but it is not
+    written yet. Documented here rather than implied, so the gap is visible in the code
+    and not only in the limitations section of a document.
+    """
 
     def asset(self, name: str) -> dict[str, Any]: ...
     def lineage_downstream(self, name: str) -> list[dict[str, Any]]: ...
