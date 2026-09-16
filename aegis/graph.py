@@ -77,7 +77,8 @@ from .integrations import BacklogStore, EmailSink, TicketSink, VcsClient, build_
 from .memory import IncidentMemory, PastIncident
 from .platform.client import SimulatedPlatform
 from .platform.scenarios import ScenarioSignals
-from .policy import AutonomyLadder
+from .policy import AutonomyLadder, GateRequirement
+from .precedent import PrecedentMatch, PrecedentStore
 from .reasoning import Reasoner
 from .tools import ToolBelt
 
@@ -109,6 +110,7 @@ class GraphState(TypedDict, total=False):
     verdict: RootCauseVerdict
     proposal: RemediationProposal
     gate_requirement: dict[str, Any]
+    precedent_applied: dict[str, Any]
     bundle: DisclosureBundle
     business_gate: GateOutcome
     technical_gate: GateOutcome
@@ -140,6 +142,7 @@ class Runtime:
     backlog: BacklogStore
     approvals: ApprovalCoordinator
     ladder: AutonomyLadder
+    precedents: PrecedentStore
 
     def agent_kwargs(self) -> dict[str, Any]:
         return {
@@ -159,6 +162,7 @@ def build_runtime(
     responder: Responder,
     memory: IncidentMemory | None = None,
     trace: TraceBus | None = None,
+    precedents: PrecedentStore | None = None,
 ) -> Runtime:
     trace = trace or TraceBus()
     chain = AuditChain(incident_id)
@@ -182,6 +186,7 @@ def build_runtime(
         backlog=backlog,
         approvals=approvals,
         ladder=AutonomyLadder(),
+        precedents=precedents if precedents is not None else PrecedentStore(),
     )
 
 
@@ -334,7 +339,8 @@ def build_graph(rt: Runtime):  # noqa: C901 -- the topology is the point
 
     def plan(state: GraphState) -> GraphState:
         agent = RemediationPlanner(**rt.agent_kwargs())
-        proposal = agent.run(state["packet"], state["verdict"])
+        verdict = state["verdict"]
+        proposal = agent.run(state["packet"], verdict)
         requirement = rt.ladder.evaluate(state["packet"].severity, proposal)
         rt.trace.emit(
             "autonomy",
@@ -356,6 +362,61 @@ def build_graph(rt: Runtime):  # noqa: C901 -- the topology is the point
                 "rationale": requirement.rationale,
             },
         )
+        # The ladder is the default policy. A standing approval from a human can
+        # override it -- but only inside boundaries the human actually set, and the
+        # decision is attributed to them by name either way.
+        precedent_applied: dict[str, Any] = {}
+        if requirement.business_gate and verdict.top_hypothesis:
+            found = rt.precedents.find(
+                root_cause_tag=verdict.top_hypothesis.tag,
+                asset=state["packet"].primary_asset,
+                proposal=proposal,
+                severity=state["packet"].severity,
+                at=state["packet"].opened_at,
+            )
+            if isinstance(found, PrecedentMatch):
+                requirement = GateRequirement(False, False, found.rationale)
+                precedent_applied = {
+                    "precedent_id": found.precedent.precedent_id,
+                    "approved_by": found.precedent.approved_by,
+                    "approved_at": found.precedent.approved_at.isoformat(),
+                    "original_incident": found.precedent.incident_id,
+                    "expires_at": found.precedent.expires_at.isoformat(),
+                    "rationale": found.rationale,
+                }
+                rt.precedents.mark_applied(found.precedent.precedent_id)
+                rt.trace.emit(
+                    "precedent",
+                    AgentRole.SUPERVISOR.value,
+                    f"standing approval applies -- {found.precedent.describe()}",
+                    precedent_applied,
+                )
+                rt.chain.append(
+                    actor=AgentRole.SUPERVISOR.value,
+                    actor_kind="agent",
+                    action="precedent_applied",
+                    detail=precedent_applied,
+                )
+            elif found.precedent is not None:
+                # A precedent existed and did not cover this. Say so out loud: silence
+                # would be indistinguishable from there never having been one.
+                rt.trace.emit(
+                    "precedent",
+                    AgentRole.SUPERVISOR.value,
+                    f"standing approval {found.precedent.precedent_id} does NOT cover "
+                    f"this -- {found.reason}",
+                    {"reason": found.reason},
+                )
+                rt.chain.append(
+                    actor=AgentRole.SUPERVISOR.value,
+                    actor_kind="agent",
+                    action="precedent_rejected",
+                    detail={
+                        "precedent_id": found.precedent.precedent_id,
+                        "reason": found.reason,
+                    },
+                )
+
         return {
             "proposal": proposal,
             "gate_requirement": {
@@ -363,6 +424,7 @@ def build_graph(rt: Runtime):  # noqa: C901 -- the topology is the point
                 "technical": requirement.technical_gate,
                 "rationale": requirement.rationale,
             },
+            "precedent_applied": precedent_applied,
             "lifecycle": IncidentState.DIAGNOSED.value,
         }
 
@@ -636,6 +698,47 @@ def build_graph(rt: Runtime):  # noqa: C901 -- the topology is the point
             )
             + f"\n\nResidual risk: {execution.residual_risk if execution else 'unknown'}",
         )
+        # A human approval that resolved cleanly becomes a standing decision, so the
+        # same question is not asked again next month. Only on a clean resolution:
+        # approving a fix that then failed verification is not a decision worth
+        # repeating automatically.
+        verdict = state.get("verdict")
+        business = state.get("business_gate")
+        recorded = None
+        if (
+            execution is not None
+            and execution.recovered
+            and verdict is not None
+            and verdict.top_hypothesis is not None
+            and business is not None
+            and business.verdict is GateVerdict.APPROVE
+        ):
+            recorded = rt.precedents.record(
+                incident_id=packet.incident_id,
+                root_cause_tag=verdict.top_hypothesis.tag,
+                asset=packet.primary_asset,
+                proposal=state["proposal"],
+                severity=packet.severity,
+                approved_by=(
+                    business.approvals[0].value if business.approvals else "product_owner"
+                ),
+                at=packet.opened_at,
+            )
+            if recorded:
+                rt.trace.emit(
+                    "precedent",
+                    AgentRole.SUPERVISOR.value,
+                    f"recorded as a standing decision until {recorded.expires_at.date()} "
+                    f"-- a recurrence of this will not ask again",
+                    {"precedent_id": recorded.precedent_id},
+                )
+                rt.chain.append(
+                    actor=AgentRole.SUPERVISOR.value,
+                    actor_kind="agent",
+                    action="precedent_recorded",
+                    detail=recorded.to_dict(),
+                )
+
         rt.chain.append(
             actor=AgentRole.AUDIT.value,
             actor_kind="agent",
@@ -643,6 +746,7 @@ def build_graph(rt: Runtime):  # noqa: C901 -- the topology is the point
             detail={
                 "recovered": execution.recovered if execution else False,
                 "steps_executed": execution.executed if execution else 0,
+                "precedent_recorded": recorded.precedent_id if recorded else None,
                 "budget": rt.ledger.summary(),
             },
         )
@@ -740,6 +844,7 @@ def run_incident(
     scripted: dict | None = None,
     memory: IncidentMemory | None = None,
     trace: TraceBus | None = None,
+    precedents: PrecedentStore | None = None,
 ) -> tuple[IncidentOutcome, Runtime, GraphState]:
     """Run one incident end to end and return its closing record."""
     started = time.perf_counter()
@@ -751,6 +856,7 @@ def run_incident(
         responder=responder,
         memory=memory,
         trace=trace,
+        precedents=precedents,
     )
     graph = build_graph(rt)
 

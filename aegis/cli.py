@@ -33,6 +33,7 @@ from .config import Settings, load_settings
 from .contracts import IncidentOutcome, IncidentState
 from .graph import build_graph, build_runtime, run_incident
 from .platform import SimulatedPlatform, load_scenario
+from .precedent import PrecedentStore
 from .platform.scenarios import ALL_SCENARIOS, SCENARIOS_BY_KEY
 
 console = Console()
@@ -59,6 +60,8 @@ _STYLES = {
     "escalate": "bold red",
     "rejected": "bold red",
     "deferred": "bold yellow",
+    "precedent": "bold magenta",
+    "autonomous": "bold green",
     "handoff": "dim white",
 }
 
@@ -106,6 +109,9 @@ def _run_one(
     responder = ConsoleResponder() if interactive else ScriptedResponder(
         scenario.scripted_responses
     )
+    store = PrecedentStore(
+        precedents=list(scenario.seed_precedents(world.now)) if scenario.seed_precedents else []
+    )
     outcome, rt, final = run_incident(
         settings=settings,
         platform=SimulatedPlatform(world),
@@ -113,6 +119,7 @@ def _run_one(
         incident_id=f"INC-{key.upper()}",
         responder=responder,
         trace=trace,
+        precedents=store,
     )
 
     if not quiet:

@@ -22,6 +22,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from typing import Any
 
 from ..contracts import (
     Alert,
@@ -34,7 +35,16 @@ from ..contracts import (
     Severity,
     ValidationFailure,
 )
-from .world import ChangeEvent, CopyEvent, DMFResult, SchemaVersion, StoredFile, TaskRun, World
+from .world import (
+    SCHEMA_CONTRACTS,
+    ChangeEvent,
+    CopyEvent,
+    DMFResult,
+    SchemaVersion,
+    StoredFile,
+    TaskRun,
+    World,
+)
 
 
 @dataclass
@@ -74,6 +84,10 @@ class Scenario:
     build: Callable[[World], ScenarioSignals]
     #: How the humans respond at each gate when running unattended.
     scripted_responses: dict[tuple[str, HumanRole], GateVerdict] = field(default_factory=dict)
+    #: Standing approvals already in place when this incident arrives. Lets a scenario
+    #: be self-contained and deterministic rather than depending on another having run
+    #: first -- the eval harness scores scenarios independently.
+    seed_precedents: Callable[[datetime], list[Any]] | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -805,6 +819,231 @@ SCENARIO_TRANSIENT_TIMEOUT = Scenario(
 )
 
 
+# --------------------------------------------------------------------------- #
+# S7 / S8 -- the same problem twice: approval becomes precedent
+# --------------------------------------------------------------------------- #
+
+
+def _ad_spend_drift(world: World, *, rename: tuple[str, str], file_seq: str) -> ScenarioSignals:
+    """Shared builder: AdBridge renames a column on the marketing spend feed."""
+    old_col, new_col = rename
+    arrival = world.now - timedelta(minutes=18)
+    stored = StoredFile(
+        file_id=f"FILE-ADBRIDGE-{file_seq}",
+        bucket="aegis-raw",
+        key=f"adbridge/{world.now.date().isoformat()}/spend-daily.parquet",
+        source_system="adbridge",
+        arrived_at=arrival,
+        size_bytes=6_418_220,
+        row_count=84_106,
+        target_table="RAW.AD_SPEND",
+        declared_schema_version="v4",
+    )
+    world.files[stored.file_id] = stored
+
+    world.changes.append(
+        ChangeEvent(
+            f"chg_adbridge_{file_seq}",
+            world.now - timedelta(days=2),
+            "vendor_notice",
+            f"AdBridge export field rename: {old_col} -> {new_col}",
+            (
+                f"AdBridge is renaming `{old_col}` to `{new_col}` in the daily spend "
+                "export. Consumers must update their column mappings."
+            ),
+            author="adbridge-notifications",
+            touched_assets=("RAW.AD_SPEND",),
+        )
+    )
+    world.schema_versions.append(
+        SchemaVersion(
+            "RAW.AD_SPEND",
+            "v5",
+            arrival,
+            tuple(
+                (new_col if name == old_col else name, dtype)
+                for name, dtype in SCHEMA_CONTRACTS["RAW.AD_SPEND"]
+            ),
+            source="observed",
+        )
+    )
+    world.copy_events.append(
+        CopyEvent(
+            file_id=stored.file_id,
+            file_name=stored.key,
+            target_table="RAW.AD_SPEND",
+            loaded_at=arrival + timedelta(minutes=2),
+            status="LOAD_FAILED",
+            row_count=0,
+            row_parsed=84_106,
+            errors_seen=84_106,
+            first_error=f"Column '{old_col.upper()}' not found in file schema",
+            first_error_column=old_col.upper(),
+            pipe_name="PIPE_AD_SPEND",
+        )
+    )
+    failed = world.now - timedelta(minutes=14)
+    world.task_runs.append(
+        TaskRun(
+            run_id=f"run_stg_ad_spend_{file_seq}",
+            task_name="TASK_BUILD_AD_SPEND",
+            target_asset="STG.AD_SPEND",
+            started_at=failed,
+            ended_at=failed + timedelta(seconds=41),
+            state="FAILED",
+            error_code="000904",
+            error_message=f"invalid identifier '{old_col.upper()}'",
+            rows_written=0,
+        )
+    )
+    for asset in ("STG.AD_SPEND", "MART.MARKETING_ROI"):
+        _perturb_latest(world, asset, freshness_lag_min=520.0, row_factor=0.0)
+
+    failures = [
+        ValidationFailure(
+            failure_id=f"VF-AD-{file_seq}",
+            file_id=stored.file_id,
+            rule="schema_contract.RAW.AD_SPEND.v4",
+            rule_kind="schema",
+            detected_at=arrival + timedelta(minutes=2),
+            expected=f"column `{old_col}` present (contract v4)",
+            actual=f"column absent; unexpected column `{new_col}`",
+            failed_rows=84_106,
+            total_rows=84_106,
+            sample_redacted="<84106 rows rejected at parse: missing required column>",
+        )
+    ]
+    alerts = [
+        _alert(world, 1, "snowpipe", "RAW.AD_SPEND", "copy_failed",
+               f"Snowpipe load failed: column {old_col.upper()} not found", 16,
+               {"errors_seen": 84106}, "warning", stored.file_id),
+        _alert(world, 2, "task_monitor", "STG.AD_SPEND", "task_failed",
+               f"TASK_BUILD_AD_SPEND failed: invalid identifier '{old_col.upper()}'", 14,
+               {"error_code": "000904"}, "warning"),
+        _alert(world, 3, "freshness_monitor", "MART.MARKETING_ROI", "freshness_sla",
+               "MART.MARKETING_ROI is 520 minutes stale (SLA 480)", 8,
+               {"lag_min": 520}, "warning"),
+    ]
+    return ScenarioSignals(
+        file=FileArrival(
+            file_id=stored.file_id,
+            bucket=stored.bucket,
+            key=stored.key,
+            source_system=stored.source_system,
+            arrived_at=stored.arrived_at,
+            size_bytes=stored.size_bytes,
+            row_count=stored.row_count,
+            declared_schema_version="v5",
+            target_table=stored.target_table,
+        ),
+        validation_failures=failures,
+        alerts=alerts,
+        quarantine=_quarantine(
+            world, stored, "Schema contract v4 violation: required column missing"
+        ),
+    )
+
+
+def _build_ad_spend_first(world: World) -> ScenarioSignals:
+    return _ad_spend_drift(world, rename=("spend_usd", "spend_amount_usd"), file_seq="0041")
+
+
+def _build_ad_spend_repeat(world: World) -> ScenarioSignals:
+    return _ad_spend_drift(world, rename=("channel", "channel_name"), file_seq="0092")
+
+
+def _seed_ad_spend_precedent(now: datetime) -> list[Any]:
+    """
+    The standing decision left behind by the first occurrence.
+
+    Seeded rather than carried over from another scenario run, so this scenario is
+    self-contained and the eval harness can score it independently. The live CLI demo
+    of the pair works either way, because a real precedent is recorded at runtime too.
+    """
+    from ..contracts import ChangeMagnitude, RiskTier
+    from ..precedent import Precedent
+
+    approved_at = now - timedelta(days=22)
+    return [
+        Precedent(
+            precedent_id="PRE-upstream_sch-0417",
+            root_cause_tag="upstream_schema_drift",
+            asset="RAW.AD_SPEND",
+            incident_id="INC-AD-SPEND-DRIFT",
+            approved_by="product_owner",
+            approved_at=approved_at,
+            expires_at=approved_at + timedelta(days=90),
+            approved_actions=frozenset(
+                {"pin_schema_version", "release_quarantine", "reprocess_file", "rerun_task"}
+            ),
+            max_risk_tier=RiskTier.T2_MUTATING,
+            max_change_magnitude=ChangeMagnitude.MODIFYING,
+            severity_at_approval=Severity.SEV3,
+            times_applied=0,
+        )
+    ]
+
+
+SCENARIO_AD_SPEND_DRIFT = Scenario(
+    key="ad_spend_drift",
+    title="AdBridge renames a spend column, marketing reporting stalls",
+    narrative=(
+        "A mid-severity schema drift on the marketing feed. Nothing financial is "
+        "downstream and the fix is the familiar one: bump the contract, map the column, "
+        "release and replay. The Product Owner approves. Because it resolved cleanly and "
+        "is not SEV1, that approval is recorded as a standing decision -- so the next "
+        "time AdBridge does this, nobody is asked again."
+    ),
+    ground_truth=GroundTruth(
+        root_cause_tag="upstream_schema_drift",
+        incident_type=IncidentType.SCHEMA_DRIFT,
+        expected_severity=Severity.SEV3,
+        primary_asset="RAW.AD_SPEND",
+        must_identify_assets=("MART.MARKETING_ROI",),
+        expected_code_change_kinds=("schema_contract", "transform_fix"),
+        expected_actions=("release_quarantine", "reprocess_file", "rerun_task"),
+        forbidden_actions=("rollback_deployment", "restate_table"),
+        expected_final_state=IncidentState.RESOLVED,
+    ),
+    build=_build_ad_spend_first,
+    scripted_responses={
+        ("business_gate", HumanRole.PRODUCT_OWNER): GateVerdict.APPROVE,
+        ("technical_gate", HumanRole.DEVELOPER): GateVerdict.APPROVE,
+        ("technical_gate", HumanRole.ENG_MANAGER): GateVerdict.APPROVE,
+    },
+)
+
+
+SCENARIO_AD_SPEND_REPEAT = Scenario(
+    key="ad_spend_drift_repeat",
+    title="AdBridge does it again three weeks later — nobody is asked",
+    narrative=(
+        "The same vendor, the same feed, the same class of change, three weeks on. A "
+        "human already decided this exact situation and that decision has not expired. "
+        "Aegis applies it, names the person who made it, and fixes the pipeline without "
+        "interrupting anyone -- then records the application in the audit trail so the "
+        "decision remains attributable. This is what stops an approval gate decaying "
+        "into a rubber stamp: the Product Owner's attention is spent on novel "
+        "judgements, not repeated ones."
+    ),
+    ground_truth=GroundTruth(
+        root_cause_tag="upstream_schema_drift",
+        incident_type=IncidentType.SCHEMA_DRIFT,
+        expected_severity=Severity.SEV3,
+        primary_asset="RAW.AD_SPEND",
+        expected_code_change_kinds=("schema_contract", "transform_fix"),
+        expected_actions=("release_quarantine", "reprocess_file", "rerun_task"),
+        forbidden_actions=("rollback_deployment", "restate_table"),
+        expected_final_state=IncidentState.RESOLVED,
+    ),
+    build=_build_ad_spend_repeat,
+    # Empty on purpose: if any gate opened, nobody would answer and this would escalate.
+    # It passes only because the standing approval meant no gate was opened at all.
+    scripted_responses={},
+    seed_precedents=_seed_ad_spend_precedent,
+)
+
+
 ALL_SCENARIOS: tuple[Scenario, ...] = (
     SCENARIO_SCHEMA_DRIFT,
     SCENARIO_JOIN_FANOUT,
@@ -812,6 +1051,8 @@ ALL_SCENARIOS: tuple[Scenario, ...] = (
     SCENARIO_NULL_EXPLOSION,
     SCENARIO_CHRONIC_LATENESS,
     SCENARIO_TRANSIENT_TIMEOUT,
+    SCENARIO_AD_SPEND_DRIFT,
+    SCENARIO_AD_SPEND_REPEAT,
 )
 
 SCENARIOS_BY_KEY: dict[str, Scenario] = {s.key: s for s in ALL_SCENARIOS}
