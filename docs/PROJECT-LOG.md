@@ -177,7 +177,15 @@ The venv keeps its own copies and is unaffected. **Lesson:** use a venv from the
 the deterministic heuristic backend at **$0**; Bedrock is called only on real demo runs.
 
 Claude Max is a **separate meter** — it covers claude.ai and this build conversation.
-It does not offset Bedrock, which bills the AWS account card monthly in arrears.
+It does not offset Bedrock, which is billed by AWS separately.
+
+**Correction, 16 Sep:** this log previously said Bedrock "bills the AWS account card
+monthly in arrears". That is true of a paid account but not of this one — the account is
+on AWS's **credit-based free plan**, so usage draws down a credit balance instead. The
+per-token price is the same either way; what changes is the constraint. The limit that
+will bite first is the free period's **expiry date**, not the balance: ~$6 of planned
+usage against the credits shown on Console Home is not close. `AWS-SETUP.md` §6 has both
+cases.
 
 ### First live Bedrock run — `schema_drift`, 16 Sep
 
@@ -444,6 +452,34 @@ new checks could not previously have failed.
 
 New coverage: `tests/test_outbound_boundary.py`, 14 tests that construct each leak and
 each false positive.
+
+### Bug 12 — prompt caching had never fired, 16 Sep
+
+Found by opening the CloudWatch console. Filtering the `AWS/Bedrock` metrics for
+"cache" returned **no matches** — neither `CacheReadInputTokenCount` nor
+`CacheWriteInputTokenCount` exists for this account. CloudWatch only publishes metrics
+that have data, so the absence of the *write* metric means not one cache checkpoint was
+ever created.
+
+**Cause.** Bedrock honours a cache point only once the cumulative prefix before it
+clears a minimum: **4,096 tokens on Haiku 4.5**, 1,024 on Sonnet 4.6. The system
+prompts are 408–638 tokens. Below the minimum the call succeeds and the prefix is
+silently not cached — no error, nothing in the response to distinguish it from a miss.
+The four specialists are the worst case: smallest budget model, highest threshold.
+
+**Decision: do not fix, correct the claim.** Padding prompts to 4,096 tokens to qualify
+is optimising backwards — a cache write bills above base rate and needs several hits to
+break even, while each agent's system prompt is used once or twice per incident against
+a 5-minute TTL. The `cachePoint` stays in the code (free, and correct if prompts grow);
+the claim comes out of `README.md`, `AWS-SETUP.md` §4 and `CODE-TOUR.md`, and
+`reasoning.py`'s docstring now explains why it is inert.
+
+**No cost figures change.** Every measured number in this log was recorded with caching
+inactive, because caching has always been inactive. The $0.16 incident is the real one.
+
+For Friday: this is the cleanest example in the project of measurement beating
+assumption. The optimisation was in the code, in the architecture doc and in the README,
+and its lifetime contribution was zero.
 
 ---
 

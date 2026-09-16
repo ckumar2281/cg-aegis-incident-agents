@@ -145,7 +145,8 @@ The preflight:
 2. lists the Claude profiles your account can see — and if the credentials can't list
    (normal for an API key), probes candidates directly instead of dead-ending
 3. makes one real Converse call per tier, a fraction of a cent
-4. confirms prompt caching engages
+4. reports whether prompt caching engaged (it does not — see §9 and
+   [`ARCHITECTURE.md`](./ARCHITECTURE.md) §7 defect 12)
 5. prints a config block to paste into `.env`
 
 **What it found for this account:**
@@ -200,13 +201,31 @@ a vector store — chosen for explainability, and this is the other reason.
 | Development, tests, eval suite (heuristic backend) | **$0** |
 | **Realistic POC total** | **~$6** |
 
-Billed to the AWS account's card, **monthly in arrears**. Watch it live at
-**Billing → Bills**, where Bedrock appears as its own line item.
+### How this is actually billed
+
+Depends which kind of account you have, and the difference matters more than the
+amounts do.
+
+**On the credit-based free plan** (what this account is on): Bedrock usage draws down
+the credit balance rather than charging a card. Console Home's **Cost and usage** widget
+shows credits remaining and days remaining. The constraint worth watching is the one the
+widget states plainly — *access to AWS services ends when credits are depleted **or** the
+free period ends* — and at ~$6 of planned usage, the expiry date will arrive long before
+the balance does. Check that date if anything is scheduled near it.
+
+**On a paid account:** billed to the account's card, monthly in arrears, with Bedrock as
+its own line item under **Billing → Bills**.
+
+Either way, per-token pricing is identical. The free plan is not a discount, it is a
+prepaid balance, so every figure in the table above is what gets consumed.
 
 ### Set a budget alarm
 
 **Billing → Budgets → Create budget → Cost budget → $10/month**, filtered to
 service = Bedrock, alert at 50%. First two budgets are free.
+
+Worth setting even on the credit plan: it tracks usage against the threshold regardless
+of how that usage is settled, so it still tells you if something is running away.
 
 > **It notifies; it does not cap.** AWS has no hard spend limit. The actual circuit
 > breaker is the budget governor in `aegis/config.py`: a $0.50 ceiling per incident,
@@ -289,7 +308,7 @@ by `ModelId`. Nothing to enable; you only need permission to read CloudWatch.
 | `Invocations` | Call count — should be ~22 for one two-round incident |
 | `InputTokenCount` / `OutputTokenCount` | The volume behind the cost figure |
 | `InvocationLatency` | Per-call latency; explains the ~119s wall clock |
-| `CacheReadInputTokenCount` / `CacheWriteInputTokenCount` | **Whether prompt caching is actually engaging.** Worth checking — it is the one cost optimisation the local trace cannot confirm |
+| `CacheReadInputTokenCount` / `CacheWriteInputTokenCount` | **Whether prompt caching is engaging.** For this account they are *absent*, which is how defect 12 was found: below Bedrock's minimum prefix, a cache point is ignored silently |
 | `InvocationThrottles` | If a demo run stalls, look here first |
 
 Set the period to 1 minute; at 5 minutes a single incident is one flat blip.

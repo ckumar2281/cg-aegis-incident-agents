@@ -170,7 +170,7 @@ is a good one.**
 
 Then, if useful:
 
-> "What I'd point at as evidence I understand it: §7 of the architecture doc lists eleven
+> "What I'd point at as evidence I understand it: §7 of the architecture doc lists twelve
 > defects found during the build, including two holes in the redaction firewall that
 > *looked* like working controls in every trace because nothing had ever attacked them.
 > Knowing why those matter is the part that isn't automatable."
@@ -307,7 +307,7 @@ python -m aegis.cli run --all --report runs/report.html
 | Full build history and decisions | `PROJECT-LOG.md` |
 
 **The single most useful section if they push on technical depth is
-`ARCHITECTURE.md` §7** — eleven defects, what each one taught. Counter-intuitive, but
+`ARCHITECTURE.md` §7** — twelve defects, what each one taught. Counter-intuitive, but
 admitting what broke builds more credibility than a clean story.
 
 ---

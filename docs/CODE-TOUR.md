@@ -77,7 +77,7 @@ Anything in the README or `ARCHITECTURE.md` that sounds impressive, and where it
 | Model tiering per role | `config.py` L197 `model_for` |
 | Per-incident budget governor | `config.py` L220 `BudgetLedger`, L249 `would_breach` |
 | Degrades honestly rather than failing | `reasoning.py` L198 `_should_use_model` → `config.py` L262 `mark_degraded` |
-| Prompt caching | `reasoning.py` L145 `converse` — `cachePoint` on the static system block |
+| Prompt caching | `reasoning.py` `converse` — `cachePoint` on the system block. **Say it is inert**: the prompts are below Bedrock's minimum cacheable prefix, CloudWatch has no cache metrics, and §7 defect 12 explains why padding them would cost more than it saves |
 | "No vector database" | `memory.py` L82 `_score` — token overlap plus recency, ~20 lines |
 
 ---
@@ -151,7 +151,7 @@ be attacked, and the answer is that its boundaries are hard-coded and tested.
 
 ## 5. The defect list is the strongest thing you have
 
-`ARCHITECTURE.md` §7 lists **eleven defects found during the build**, with what each one
+`ARCHITECTURE.md` §7 lists **twelve defects found during the build**, with what each one
 taught. Counter-intuitive, but lead with it if the conversation goes technical: a
 candidate who found eleven bugs in their own work and wrote them down is more credible
 than one whose demo simply worked.

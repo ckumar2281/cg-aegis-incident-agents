@@ -205,7 +205,12 @@ every call as it makes it.
   remaining agents degrade and the incident is marked `degraded_reasoning`.
 - **Evidence compaction** — agents never see raw logs, only pre-aggregated structures.
   Cheaper, and it stops the model doing arithmetic it is bad at.
-- **Prompt caching** on static system prompts; **bounded rounds**, hard stop at 2.
+- **Bounded rounds** — hard stop at 2, so a stubborn incident cannot spend without limit.
+
+Prompt caching is wired but **does not currently fire**: Bedrock needs 4,096 cached
+tokens on Haiku and these system prompts are ~600. CloudWatch says so — no cache
+metrics exist for this account. Documented rather than quietly left as a claim; see
+`ARCHITECTURE.md` §7 defect 12.
 
 No vector database. Incident memory is a small explainable similarity function — no
 infrastructure, no idle cost, and you can see *why* two incidents were judged similar.
@@ -275,7 +280,7 @@ docs/              see below
 
 | File | What it covers |
 |---|---|
-| [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) | The design, the hand-off contracts, the confidence-gate arithmetic, **§7: eleven defects found during the build**, and stated limitations |
+| [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) | The design, the hand-off contracts, the confidence-gate arithmetic, **§7: twelve defects found during the build**, and stated limitations |
 | [`CODE-TOUR.md`](docs/CODE-TOUR.md) | **Every claim mapped to the file and function that makes it true** — the reading order, and where to point when asked |
 | [`DEMO-GUIDE.md`](docs/DEMO-GUIDE.md) | How to run and present it, with honest answers to hard questions |
 | [`DEPLOYMENT.md`](docs/DEPLOYMENT.md) | The AgentCore path, and the one part that is a real architectural change |

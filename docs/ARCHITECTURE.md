@@ -366,7 +366,7 @@ vector store with a **2-OCU minimum, roughly $345/month at zero queries**.
 
 ## 7. What went wrong, and what it teaches
 
-Eleven defects found during the build. These are recorded because a reviewer will probe
+Twelve defects found during the build. These are recorded because a reviewer will probe
 exactly here, and because the fixes are more interesting than the features.
 
 | # | Defect | Why it matters |
@@ -382,6 +382,7 @@ exactly here, and because the fixes are more interesting than the features.
 | 9 | Every notification defaulted to **business tier** while every call site sent to the pipeline owner, a *technical* recipient | Five of seven messages per incident were recorded at the wrong tier — including in the audit trail that claims to prove who saw what |
 | 10 | **Neither an approval-request body nor any subject line was ever firewall-checked.** Only the brief's individual fields were | Anything the email renderer added *between* the fields left the building unchecked |
 | 11 | Two firewall rules were **over-broad in ways only a rendered email could reveal** | A control that blocks the recipient's own approval button is a control that gets switched off |
+| 12 | **Prompt caching never once fired.** The system prompts are far below Bedrock's minimum cacheable prefix, so every cache point was silently ignored | A documented cost optimisation that has never executed is a claim, not an optimisation |
 
 ### The two firewall holes are the instructive ones
 
@@ -463,6 +464,44 @@ its own:
 And a second: correcting a mislabel is not cosmetic work. Defect 9 leaked nothing —
 it blinded a control. The eval score went **up** from 112 to 118 checks after these
 fixes, because two of the new checks could not previously have failed.
+
+### Defect 12: the optimisation that was never running
+
+Found by opening the CloudWatch console and looking, which took about a minute and
+should have happened on day one.
+
+`reasoning.py` puts a `cachePoint` on the system block of every Converse call, and the
+docs listed prompt caching among the cost controls. Bedrock requires a **minimum
+cumulative prefix** before a checkpoint is honoured: **4,096 tokens on Haiku 4.5**,
+1,024 on Sonnet 4.6. These system prompts are 408–638 tokens.
+
+| Prompt | ~tokens | Tier | Minimum | Cached? |
+|---|---|---|---|---|
+| Triage | 408 | Sonnet | 1,024 | ✗ |
+| RCA | 484 | Sonnet | 1,024 | ✗ |
+| Planner | 471 | Sonnet | 1,024 | ✗ |
+| Disclosure | 562 | Sonnet | 1,024 | ✗ |
+| Four specialists | ~636 each | **Haiku** | **4,096** | ✗ |
+
+Below the minimum the call **still succeeds and the prefix is simply not cached** —
+no error, no warning, nothing in the response that distinguishes it from a cache miss.
+The proof is an absence: in the `AWS/Bedrock` namespace for this account there is no
+`CacheReadInputTokenCount` **and no `CacheWriteInputTokenCount`**. CloudWatch only
+publishes metrics that have data, so not one checkpoint was ever written.
+
+The instructive part is the decision *not* to fix it. Padding these prompts past 4,096
+tokens to qualify would be optimising backwards: a cache write is billed above base
+rate, so it needs several hits to pay for itself, and each agent's system prompt is
+used once or twice per incident against a 5-minute default TTL. The design comment
+claimed the prompts were "long, static and reused across every incident" — static is
+the only one of the three that was true.
+
+So the cache point stays (correct and free, and it starts working if the prompts ever
+grow) and the *claim* goes. Every cost figure in this repo was measured with caching
+inactive, so none of them move.
+
+> **An optimisation you have not measured is a belief.** This one was in the code, in
+> the architecture doc and in the README, and its contribution to date is exactly zero.
 
 ---
 

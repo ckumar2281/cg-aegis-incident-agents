@@ -127,9 +127,26 @@ class BedrockBackend:
     """
     Thin wrapper over the Bedrock Converse API.
 
-    System prompts are marked with a cache point: agent system prompts are long,
-    static and reused across every incident, so caching them cuts input cost to
-    roughly a tenth of base rate on repeat calls.
+    **The cache point below is currently inert, and measurement is how we know.**
+
+    The system block carries a `cachePoint`, on the theory that agent system prompts
+    are long, static and reused. Two of those three are false. Bedrock requires a
+    minimum cumulative prefix before a checkpoint is honoured -- 4,096 tokens for
+    Haiku 4.5, 1,024 for Sonnet 4.6 -- and these prompts run 408 to 638 tokens. Below
+    the minimum the call still succeeds and the prefix is simply not cached, with no
+    error and nothing in the response to say so. CloudWatch settled it: neither
+    `CacheReadInputTokenCount` nor `CacheWriteInputTokenCount` exists in the
+    `AWS/Bedrock` namespace for this account, so not one checkpoint was ever written.
+
+    Padding the prompts to clear 4,096 tokens would be optimising backwards: a cache
+    write is billed above base rate, so it needs several hits to pay for itself, and
+    each agent's system prompt is used once or twice per incident against a 5-minute
+    default TTL. The reuse the design assumed does not happen either.
+
+    The cache point stays because it is correct and free -- if these prompts ever grow
+    past the threshold it starts working. But it is not a cost control today, and the
+    docs no longer claim it is. Every measured cost figure in this repo was recorded
+    with caching inactive, so none of them change.
     """
 
     def __init__(self, region: str) -> None:
