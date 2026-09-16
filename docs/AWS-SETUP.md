@@ -196,7 +196,7 @@ a vector store — chosen for explainability, and this is the other reason.
 |---|---|
 | Model access, IAM, API keys, budget alarms | **$0** |
 | **One incident run** | **$0.16** (measured live: 22 calls, two rounds) |
-| All five scenarios once | $0.66 |
+| All eight scenarios once | ~$1.30 |
 | Development, tests, eval suite (heuristic backend) | **$0** |
 | **Realistic POC total** | **~$6** |
 
@@ -309,7 +309,7 @@ model ID, caller identity, token counts, and the input/output bodies inline up t
 — past that, or for binary output, S3 is required. Text-only agent traffic is far under
 the limit.
 
-**Enable it in the same region your client calls** — `us-east-2` here. Logging is
+**Enable it in the same region your client calls** — `us-east-1` here, per §1. Logging is
 configured per region, and a cross-region inference profile does not move the
 configuration to wherever the request was ultimately served.
 
