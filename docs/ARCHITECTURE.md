@@ -2,6 +2,8 @@
 
 **Governed agentic incident management for data pipelines.**
 
+*Designed and built by **Chaitanya Ganta**, September 2026.*
+
 A team of specialised agents detects a data incident, investigates it, works out what
 broke, proposes a fix — and then refuses to touch anything until the right humans have
 approved, in a specific order, having seen specific things.

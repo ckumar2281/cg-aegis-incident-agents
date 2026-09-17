@@ -2,6 +2,8 @@
 
 **Governed agentic incident management for data pipelines.**
 
+*Designed and built by **Chaitanya Ganta**, September 2026.*
+
 Aegis detects a data pipeline incident, investigates it with a team of specialised
 agents, works out what actually broke, proposes a fix — and then refuses to touch
 anything until the right humans have approved, in a specific order, having seen
