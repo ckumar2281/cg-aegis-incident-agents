@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aegis — Orchestration Graph</title>
+<style>
+  :root {
+    --bg:#ffffff; --fg:#16181d; --muted:#5c6370;
+    --line:#e3e6ea; --accent:#2f6f4f; --card:#fafbfc;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg:#14161a; --fg:#e8eaed; --muted:#9aa1ab;
+      --line:#2a2e35; --accent:#6fbf95; --card:#1a1d22;
+    }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:32px 16px 64px; background:var(--bg); color:var(--fg);
+         font:15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+  .wrap { max-width:1100px; margin:0 auto; }
+  h1 { font-size:22px; margin:0 0 4px; letter-spacing:-0.01em; }
+  .sub { color:var(--muted); margin:0 0 20px; font-size:14px; }
+
+  /* The diagram panel is ALWAYS light: guarantees contrast on a projector,
+     and mermaid's dark theme renders pale labels on near-white nodes. */
+  .panel { background:#ffffff; border:1px solid var(--line); border-radius:10px;
+           padding:18px; }
+  .bar { display:flex; align-items:center; gap:8px; margin-bottom:12px; }
+  .bar button { font:inherit; font-size:13px; padding:4px 12px; border-radius:6px;
+                border:1px solid #d7dbe0; background:#f4f6f8; color:#16181d; cursor:pointer; }
+  .bar button:hover { background:#e9edf1; }
+  .bar span { color:#6b7280; font-size:12.5px; margin-left:auto; }
+  .stage { overflow:auto; max-height:76vh; }
+  .stage svg { display:block; margin:0 auto; height:auto !important; transform-origin:top center; }
+
+  .legend { display:flex; flex-wrap:wrap; gap:20px; margin:20px 0 0; font-size:13.5px; color:var(--muted); }
+  .legend b { color:var(--fg); font-weight:600; }
+  h2 { font-size:15px; margin:34px 0 10px; letter-spacing:0.02em; text-transform:uppercase; color:var(--muted); }
+  table { border-collapse:collapse; width:100%; font-size:14px; }
+  th,td { text-align:left; padding:7px 12px 7px 0; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-weight:600; font-size:12.5px; text-transform:uppercase; letter-spacing:0.04em; }
+  code { font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:13px; color:var(--accent); }
+  details { margin-top:30px; }
+  summary { cursor:pointer; color:var(--muted); font-size:13.5px; }
+  pre { background:var(--card); border:1px solid var(--line); border-radius:8px;
+        padding:14px; overflow-x:auto; font-size:12.5px; line-height:1.5; }
+  .note { margin-top:30px; padding:14px 16px; border-left:3px solid var(--accent);
+          background:var(--card); font-size:14px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Aegis — orchestration graph</h1>
+  <p class="sub">Generated from the compiled LangGraph at runtime, not drawn by hand — it cannot drift from the code.</p>
+
+  <div class="panel">
+    <div class="bar">
+      <button id="out">−</button>
+      <button id="fit">Fit</button>
+      <button id="in">+</button>
+      <span id="pct">100%</span>
+    </div>
+    <div class="stage"><pre class="mermaid">graph TD;
+        __start__([<p>__start__</p>]):::first
+        quarantine(quarantine)
+        triage(triage)
+        lineage(lineage)
+        pipeline(pipeline)
+        quality(quality)
+        change(change)
+        rca(rca)
+        round_two(round_two)
+        escalate(escalate)
+        plan(plan)
+        autonomous(autonomous)
+        disclose(disclose)
+        disclosure_failed(disclosure_failed)
+        business_gate(business_gate)
+        technical_gate(technical_gate)
+        rejected(rejected)
+        deferred(deferred)
+        execute(execute)
+        close(close)
+        __end__([<p>__end__</p>]):::last
+        __start__ --> quarantine;
+        autonomous --> close;
+        business_gate -.-> deferred;
+        business_gate -.-> escalate;
+        business_gate -.-> rejected;
+        business_gate -.-> technical_gate;
+        change --> rca;
+        disclose -.-> business_gate;
+        disclose -.-> disclosure_failed;
+        execute --> close;
+        lineage --> rca;
+        pipeline --> rca;
+        plan -.-> autonomous;
+        plan -.-> disclose;
+        quality --> rca;
+        quarantine --> triage;
+        rca -.-> escalate;
+        rca -.-> plan;
+        rca -.-> round_two;
+        round_two --> change;
+        round_two --> lineage;
+        round_two --> pipeline;
+        round_two --> quality;
+        technical_gate -.-> escalate;
+        technical_gate -.-> execute;
+        technical_gate -.-> rejected;
+        triage --> change;
+        triage --> lineage;
+        triage --> pipeline;
+        triage --> quality;
+        close --> __end__;
+        deferred --> __end__;
+        disclosure_failed --> __end__;
+        escalate --> __end__;
+        rejected --> __end__;
+        classDef default fill:#f2f0ff,line-height:1.2
+        classDef first fill-opacity:0
+        classDef last fill:#bfb6fc</pre></div>
+  </div>
+
+  <div class="legend">
+    <span><b>──</b> unconditional edge</span>
+    <span><b>- -</b> conditional routing — a function decides at runtime</span>
+  </div>
+
+  <h2>What to point at</h2>
+  <table>
+    <tr><th style="width:26%">Node</th><th>Why it is there</th></tr>
+    <tr><td><code>quarantine → triage</code></td><td>Containment is attempted on <em>every</em> incident, before any agent runs. When there is no file the node says so and moves on — the graph never decides whether to <em>try</em>.</td></tr>
+    <tr><td><code>triage → 4 specialists</code></td><td>One superstep, four agents concurrently. Each reads different data and answers a different question.</td></tr>
+    <tr><td><code>rca ⇢ round_two</code></td><td>The loop. When confidence is short, fresh directives go back to the specialists — bounded at two rounds.</td></tr>
+    <tr><td><code>plan ⇢ autonomous</code></td><td>The autonomy ladder as real control flow. Low-risk reversible work skips every gate.</td></tr>
+    <tr><td><code>disclose ⇢ business_gate</code></td><td>The redaction firewall sits between them. A failed check routes to <code>disclosure_failed</code>, not onward.</td></tr>
+    <tr><td><code>business_gate ⇢ technical_gate</code></td><td>Tiered disclosure: the technical packet is only released once the business gate approves.</td></tr>
+    <tr><td><code>business_gate ⇢ rejected</code></td><td>The human can say no, and the system obeys — file stays held, ticket raised, nothing executed.</td></tr>
+  </table>
+
+  <div class="note">
+    The dashed edges are where the decision is computed, not configured. That is the difference
+    between a multi-agent system and a pipeline of function calls: the graph does not know in
+    advance which way it will go.
+  </div>
+
+  <details>
+    <summary>Mermaid source (as emitted by <code>aegis graph</code>)</summary>
+    <pre>---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+        __start__([&lt;p&gt;__start__&lt;/p&gt;]):::first
+        quarantine(quarantine)
+        triage(triage)
+        lineage(lineage)
+        pipeline(pipeline)
+        quality(quality)
+        change(change)
+        rca(rca)
+        round_two(round_two)
+        escalate(escalate)
+        plan(plan)
+        autonomous(autonomous)
+        disclose(disclose)
+        disclosure_failed(disclosure_failed)
+        business_gate(business_gate)
+        technical_gate(technical_gate)
+        rejected(rejected)
+        deferred(deferred)
+        execute(execute)
+        close(close)
+        __end__([&lt;p&gt;__end__&lt;/p&gt;]):::last
+        __start__ --&gt; quarantine;
+        autonomous --&gt; close;
+        business_gate -.-&gt; deferred;
+        business_gate -.-&gt; escalate;
+        business_gate -.-&gt; rejected;
+        business_gate -.-&gt; technical_gate;
+        change --&gt; rca;
+        disclose -.-&gt; business_gate;
+        disclose -.-&gt; disclosure_failed;
+        execute --&gt; close;
+        lineage --&gt; rca;
+        pipeline --&gt; rca;
+        plan -.-&gt; autonomous;
+        plan -.-&gt; disclose;
+        quality --&gt; rca;
+        quarantine --&gt; triage;
+        rca -.-&gt; escalate;
+        rca -.-&gt; plan;
+        rca -.-&gt; round_two;
+        round_two --&gt; change;
+        round_two --&gt; lineage;
+        round_two --&gt; pipeline;
+        round_two --&gt; quality;
+        technical_gate -.-&gt; escalate;
+        technical_gate -.-&gt; execute;
+        technical_gate -.-&gt; rejected;
+        triage --&gt; change;
+        triage --&gt; lineage;
+        triage --&gt; pipeline;
+        triage --&gt; quality;
+        close --&gt; __end__;
+        deferred --&gt; __end__;
+        disclosure_failed --&gt; __end__;
+        escalate --&gt; __end__;
+        rejected --&gt; __end__;
+        classDef default fill:#f2f0ff,line-height:1.2
+        classDef first fill-opacity:0
+        classDef last fill:#bfb6fc</pre>
+  </details>
+</div>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({
+    startOnLoad: false,
+    securityLevel: "loose",
+    theme: "base",
+    themeVariables: {
+      fontFamily: "-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif",
+      fontSize: "15px",
+      primaryColor: "#eef2f7",
+      primaryTextColor: "#16181d",
+      primaryBorderColor: "#94a3b8",
+      lineColor: "#64748b",
+      tertiaryColor: "#ffffff"
+    },
+    flowchart: { curve: "linear", useMaxWidth: true, htmlLabels: true }
+  });
+  await mermaid.run();
+
+  const svg = document.querySelector(".stage svg");
+  let scale = 1;
+  const pct = document.getElementById("pct");
+  function apply() {
+    svg.style.transform = `scale(${scale})`;
+    pct.textContent = Math.round(scale * 100) + "%";
+  }
+  document.getElementById("in").onclick  = () => { scale = Math.min(scale * 1.25, 4); apply(); };
+  document.getElementById("out").onclick = () => { scale = Math.max(scale / 1.25, 0.3); apply(); };
+  document.getElementById("fit").onclick = () => { scale = 1; apply(); };
+  apply();
+</script>
+</body>
+</html>

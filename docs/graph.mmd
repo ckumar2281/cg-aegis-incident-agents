@@ -1,0 +1,66 @@
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+        __start__([<p>__start__</p>]):::first
+        quarantine(quarantine)
+        triage(triage)
+        lineage(lineage)
+        pipeline(pipeline)
+        quality(quality)
+        change(change)
+        rca(rca)
+        round_two(round_two)
+        escalate(escalate)
+        plan(plan)
+        autonomous(autonomous)
+        disclose(disclose)
+        disclosure_failed(disclosure_failed)
+        business_gate(business_gate)
+        technical_gate(technical_gate)
+        rejected(rejected)
+        deferred(deferred)
+        execute(execute)
+        close(close)
+        __end__([<p>__end__</p>]):::last
+        __start__ --> quarantine;
+        autonomous --> close;
+        business_gate -.-> deferred;
+        business_gate -.-> escalate;
+        business_gate -.-> rejected;
+        business_gate -.-> technical_gate;
+        change --> rca;
+        disclose -.-> business_gate;
+        disclose -.-> disclosure_failed;
+        execute --> close;
+        lineage --> rca;
+        pipeline --> rca;
+        plan -.-> autonomous;
+        plan -.-> disclose;
+        quality --> rca;
+        quarantine --> triage;
+        rca -.-> escalate;
+        rca -.-> plan;
+        rca -.-> round_two;
+        round_two --> change;
+        round_two --> lineage;
+        round_two --> pipeline;
+        round_two --> quality;
+        technical_gate -.-> escalate;
+        technical_gate -.-> execute;
+        technical_gate -.-> rejected;
+        triage --> change;
+        triage --> lineage;
+        triage --> pipeline;
+        triage --> quality;
+        close --> __end__;
+        deferred --> __end__;
+        disclosure_failed --> __end__;
+        escalate --> __end__;
+        rejected --> __end__;
+        classDef default fill:#f2f0ff,line-height:1.2
+        classDef first fill-opacity:0
+        classDef last fill:#bfb6fc
+
