@@ -348,6 +348,12 @@ class Settings:
     # storage
     raw_bucket: str = _env("AEGIS_RAW_BUCKET", "aegis-raw")
     quarantine_bucket: str = _env("AEGIS_QUARANTINE_BUCKET", "aegis-quarantine")
+    #: "s3" only takes effect when a bucket is configured; anything else keeps the
+    #: in-memory store, so the eval suite stays offline and deterministic by default.
+    storage_provider: str = _env("AEGIS_STORAGE_PROVIDER", "simulated")  # s3 | simulated
+    #: Mirrors the Snowflake client: writing to a real bucket is opt-in by name. A
+    #: misconfigured demo moves nothing rather than moving something unexpected.
+    storage_execute_mode: str = _env("AEGIS_STORAGE_EXECUTE_MODE", "dry_run")  # live | dry_run
 
     # integrations
     ticket_provider: str = _env("AEGIS_TICKET_PROVIDER", "mock")  # jira | servicenow | mock

@@ -78,6 +78,7 @@ from .integrations import BacklogStore, EmailSink, TicketSink, VcsClient, build_
 from .memory import IncidentMemory, PastIncident
 from .platform.client import SimulatedPlatform
 from .platform.scenarios import ScenarioSignals
+from .platform.storage import S3Storage, SimulatedStorage, StorageClient, ZoneLayout
 from .policy import AutonomyLadder, GateRequirement, RedactionPolicy
 from .precedent import PrecedentMatch, PrecedentStore
 from .reasoning import Reasoner
@@ -148,6 +149,10 @@ class Runtime:
     #: out. Held on the runtime so there is exactly one instance per incident and no
     #: node can quietly construct a laxer one.
     redaction: RedactionPolicy
+    #: The object store. Containment is a move, so the fail-safe needs somewhere to
+    #: move things to -- see platform/storage.py for why a flag is not containment.
+    storage: StorageClient
+    zones: ZoneLayout
 
     def agent_kwargs(self) -> dict[str, Any]:
         return {
@@ -175,6 +180,16 @@ def build_runtime(
     reasoner = Reasoner(settings, ledger, trace, incident_id=incident_id)
     tools = ToolBelt(platform, memory or IncidentMemory(now=platform.world.now))
     email, tickets, vcs, backlog = build_integrations(settings)
+    zones = ZoneLayout(
+        landing_bucket=settings.raw_bucket,
+        quarantine_bucket=settings.quarantine_bucket,
+    )
+    if settings.storage_provider == "s3":
+        storage: StorageClient = S3Storage(
+            region=settings.aws_region, execute_mode=settings.storage_execute_mode
+        )
+    else:
+        storage = SimulatedStorage(platform.world)
     redaction = RedactionPolicy()
     approvals = ApprovalCoordinator(
         settings=settings,
@@ -199,6 +214,8 @@ def build_runtime(
         ladder=AutonomyLadder(),
         precedents=precedents if precedents is not None else PrecedentStore(),
         redaction=redaction,
+        storage=storage,
+        zones=zones,
     )
 
 
@@ -231,12 +248,33 @@ def build_graph(rt: Runtime):  # noqa: C901 -- the topology is the point
             return {"lifecycle": IncidentState.DETECTED.value, "notes": []}
 
         record = signals.quarantine
+        # Containment is a move, not a flag. The record already names both URIs; this
+        # is where the object actually leaves the landing zone. On the simulated store
+        # that is an in-memory rename; on S3 it is copy-then-delete-the-source, and in
+        # dry-run mode it reports what it would do and touches nothing.
+        moved = rt.storage.move(record.original_uri, record.quarantine_uri)
         rt.trace.emit(
             "quarantine",
             "system",
             f"file {record.file_id} held before the warehouse -- {record.reason}",
-            {"file_id": record.file_id, "uri": record.quarantine_uri},
+            {
+                "file_id": record.file_id,
+                "uri": record.quarantine_uri,
+                "object_moved": moved.ok,
+                "dry_run": moved.dry_run,
+            },
         )
+        if not moved.ok:
+            # A failed move is not a failed incident, but it must not be silent: the
+            # file is still where the loader can see it, and saying "quarantined" when
+            # nothing moved is the exact class of untrue claim this project keeps
+            # finding in itself.
+            rt.trace.emit(
+                "quarantine",
+                "system",
+                f"containment incomplete -- {moved.detail}",
+                {"file_id": record.file_id, "from": moved.source_uri},
+            )
         rt.chain.append(
             actor="ingestion",
             actor_kind="system",
@@ -245,6 +283,11 @@ def build_graph(rt: Runtime):  # noqa: C901 -- the topology is the point
                 "file_id": record.file_id,
                 "reason": record.reason,
                 "quarantine_uri": record.quarantine_uri,
+                # The audit trail records whether the bytes moved, separately from
+                # whether the incident was marked contained.
+                "object_moved": moved.ok,
+                "storage_detail": moved.detail,
+                "dry_run": moved.dry_run,
             },
         )
         return {
