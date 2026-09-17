@@ -83,8 +83,12 @@ client.invoke_agent_runtime(
 
 ## 3. What triggers it
 
-Today a scenario is loaded from a fixture. In production the trigger is the platform
-itself:
+Today a scenario is loaded from a fixture and the run is started by hand
+(`aegis run schema_drift`). Nothing in the demo is event-driven: the S3 objects are
+real, but no bucket notification, EventBridge rule or Lambda exists. This section is
+the design, not a description of what runs.
+
+In production the trigger is the platform itself:
 
 ```
 Snowpipe / dbt test failure
@@ -101,6 +105,69 @@ de-duplication needs lineage, and lineage lives in the agent layer.
 notification plus a Lambda, and it must keep working whether or not the agent system is
 healthy. An incident-response system that becomes a dependency of your data safety has
 the relationship the wrong way round.
+
+*(In the current build the graph performs the move itself, because that Lambda is not
+deployed. That is the one place the demo does something this design says should sit
+outside the agents.)*
+
+### 3a. How data actually gets into Snowflake
+
+The load is **Snowpipe auto-ingest over an external stage**, not a Lambda. This is worth
+stating explicitly because "a Lambda loads the file" is the obvious answer and the wrong
+one: `COPY` already gives load-history deduplication — the same file will not load twice
+— plus retries and `SNOWPIPE_COPY_HISTORY` as a queryable failure record. A Lambda doing
+the load by hand reimplements all three, badly, under a fifteen-minute ceiling, and the
+agents lose the very table they read to diagnose a failed load.
+
+| Component | Job | Not its job |
+|---|---|---|
+| Snowpipe + external stage | Move bytes into Snowflake | Deciding anything |
+| Validator Lambda | Check the file against its contract; quarantine on failure | Loading data |
+| EventBridge | Content-based routing between them | Holding state |
+| Agent runtime | Decide what to do once something has failed | Being in the load path |
+
+**Two prefixes, not one.** If Snowpipe and the validator both watch the landing prefix
+they race, and roughly half the time Snowpipe wins and the bad file is in the warehouse
+before anything has inspected it. Splitting the prefix removes the race entirely rather
+than narrowing it:
+
+```
+s3://<raw>/incoming/…                      file arrives
+   └─ S3 ObjectCreated ─▶ EventBridge ─▶ validator Lambda
+        reads the parquet footer, compares columns to the declared contract
+        │
+        ├─ passes ─▶ move to s3://<raw>/validated/…
+        │              └─ Snowpipe AUTO_INGEST ─▶ COPY INTO RAW.STRIPE_CHARGES    ✅
+        │
+        └─ fails  ─▶ move to s3://<quarantine>/<incident>/…
+                       └─ emit Alert ─▶ EventBridge ─▶ invoke_agent_runtime       🛑
+```
+
+The pipe's stage points at `validated/` only, so it never sees a file that has not
+passed. That is what makes *"quarantined before anything reaches the warehouse"* a
+literal statement rather than a figure of speech.
+
+Three Snowflake objects are needed: a `STORAGE INTEGRATION` (which mints an external ID
+that goes into the IAM role's trust policy — Snowflake assumes the role, no long-lived
+key), an external `STAGE` over `s3://<raw>/validated/`, and a `PIPE` with
+`AUTO_INGEST = TRUE`. The pipe's `notification_channel` is the SQS ARN that the S3
+event notification publishes to; Snowflake provisions that queue, you do not.
+
+**Two entry points into the agents, not one.** Validation up front cannot catch
+everything — a bad value inside a well-shaped file, a revoked grant, an expired stage
+credential. So Snowpipe error notifications go to SNS and into the same normalising
+Lambda. The agents are woken by *rejected before load* and by *failed during load*, and
+triage does not need to care which, because both arrive as an `Alert`.
+
+### 3b. Where the contract lives
+
+The validator needs to know what "valid" means, and the honest answer today is that it
+does not have a source of truth: the demo's contract is a `SchemaVersion` inside the
+simulated world. In production it belongs next to the data — a table in Snowflake read
+by both the validator and the `pin_schema_version` remediation step — so that when the
+agents bump a contract from v3 to v4 after an approval, the validator starts accepting
+v4 files by the same act. A contract the remediation can change but the gate cannot read
+would let an approved fix appear to work while every subsequent file is still rejected.
 
 ---
 

@@ -844,14 +844,23 @@ Default is the heuristic backend: deterministic, free, no credentials. `--bedroc
 
 ---
 
-## 9b. The Snowflake client — written 17 Sep, unverified
+## 9b. The Snowflake client — written 17 Sep, verified the same day
 
 `aegis/platform/snowflake.py`, ~600 lines, implements the whole `PlatformClient`
-protocol against a real warehouse. **It has never been executed.** Nothing imports it,
-so it cannot move a single eval check; `SimulatedPlatform` remains what everything runs
-against.
+protocol against a real warehouse. It was written before any credentials existed and
+shipped under the heading *"written, not verified"*; later the same day an Enterprise
+trial arrived and it was run against a live account — **13 of 14 methods returned real
+rows, zero failures**, and two defects surfaced that a simulation could not have found.
+See *Verified* below.
 
-### Why write it unverified at all
+Two things remain true and are easy to conflate with the above. Nothing in the demo path
+imports it: `AEGIS_PLATFORM` defaults to `simulated`, every run in this log reports
+`platform: simulated`, and the client therefore moves no eval check. And the heading of
+this section said "unverified" for several hours after it stopped being true — corrected
+here, because a log that overstates is a known failure mode of this project and a log
+that *under*states is the same failure wearing modesty.
+
+### Why it was written before it could be verified
 
 Two days of this log are corrections to claims that outran evidence, so the bar for
 adding another was high. It clears it for one reason: *"the platform is simulated"* is
