@@ -285,7 +285,34 @@ is real. Do not run the suite live. Suggested order:
 3. `python -m aegis.cli run ad_spend_drift_repeat` — precedent: nobody was asked, and the
    trace cites who decided and when
 4. `python -m evals.harness` — 118/118, three seconds
-5. `python -m aegis.cli run schema_drift --bedrock` — the live one, while you talk over it
+5. `python scripts/check_snowflake.py --asset MART.DAILY_REVENUE` — ~5 seconds, and it
+   answers the hardest question before it is asked. See below
+6. `python -m aegis.cli run schema_drift --bedrock` — the live one, while you talk over it
 
 Have `python -m aegis.cli run --all --report` run beforehand so the HTML trace report is
 already on disk if anyone wants to scroll through it afterwards.
+
+### Step 5 is the one to be deliberate about
+
+"Is any of this connected to real data?" is the question that sinks POCs, and it usually
+arrives as a gotcha. Volunteering the answer is stronger than defending it:
+
+> "The warehouse is simulated, and that is on purpose — the eval suite scores 118 checks
+> and I do not want those going red because somebody altered a table. But the Snowflake
+> client that replaces it is written and I ran it against a live account this week."
+
+Then run it. Thirteen of fourteen methods return real rows in about five seconds.
+
+**If asked what verifying it cost you, the honest answer is the good one:** it found two
+bugs a simulation could not have. `task_runs` filtered task history by the asset's own
+schema — true of the simulated warehouse, false of a real one, where the task refreshing
+`MART.DAILY_REVENUE` lives in `OPS`. It reported zero task runs for a table whose task
+had just run: confident, plausible and wrong. And `schema_diff` assumed a `CREATED`
+column that does not exist — Snowflake records when a column was *deleted* and never
+when one was added, so the result now carries `additions_observable: False` rather than
+an empty list, because "none were added" and "this source cannot see additions" are
+different facts and an agent that confuses them rules out the real cause.
+
+**The fourteenth method** is `failed_runs`, and it returns nothing because nothing has
+failed. Say that plainly rather than hiding it — a true negative you can explain is
+worth more than a green tick you cannot.
