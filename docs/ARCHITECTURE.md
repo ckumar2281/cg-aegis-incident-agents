@@ -366,7 +366,7 @@ vector store with a **2-OCU minimum, roughly $345/month at zero queries**.
 
 ## 7. What went wrong, and what it teaches
 
-Fourteen defects found during the build. These are recorded because a reviewer will probe
+Fifteen defects found during the build. These are recorded because a reviewer will probe
 exactly here, and because the fixes are more interesting than the features.
 
 | # | Defect | Why it matters |
@@ -385,6 +385,7 @@ exactly here, and because the fixes are more interesting than the features.
 | 12 | **Prompt caching never once fired.** The system prompts are far below Bedrock's minimum cacheable prefix, so every cache point was silently ignored | A documented cost optimisation that has never executed is a claim, not an optimisation |
 | 13 | The Snowflake seed script left **a task on a 10-minute schedule and DMFs on a 5-minute one**, with no teardown | Tuned for fast verification, shipped as a standing cost. ~78 credits/month for a table nobody reads |
 | 14 | **A transport failure killed the whole incident.** SES raising `NoCredentialsError` propagated out of the graph, discarding two minutes of reasoning, four specialists, two RCA rounds and the entire audit chain | The system could not tell "we must not send this" from "we could not send this" — and threw away the record that would have explained which |
+| 15 | **`ZoneLayout` configured nothing.** `build_runtime` read `settings.raw_bucket` and passed a `ZoneLayout` into the runtime; the quarantine node moved `record.original_uri` → `record.quarantine_uri`, both hard-coded in `scenarios.py` | Configuration that cannot change behaviour is decoration — the same defect as #5, in a different costume. Invisible until the store became real, because S3 bucket names are globally unique and `aegis-raw` is not a name you can have |
 
 ### Defect 14: refusal and failure are opposites
 

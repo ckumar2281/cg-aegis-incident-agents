@@ -159,14 +159,22 @@ class TestResponderDeliveryDependence:
 class TestIncidentSurvivesADeadMailer:
     @pytest.fixture
     def outcome_and_runtime(self, monkeypatch):
-        # Belt and braces: this test must never reach a real SES, whatever the
-        # developer's shell happens to export.
+        # Belt and braces: this test must never reach real infrastructure, whatever
+        # the developer's shell happens to export. `load_settings()` reads the
+        # environment, and by deliverable day that environment had a live SES sender,
+        # an S3 landing zone and AEGIS_STORAGE_EXECUTE_MODE=live in it -- so this
+        # fixture was one `export` away from having pytest quietly move the demo's
+        # seeded object into quarantine and delete the source. A test that reads
+        # ambient configuration has to pin every part of it, not the parts that were
+        # interesting on the day it was written.
         monkeypatch.delenv("AEGIS_SES_SENDER", raising=False)
         monkeypatch.setattr(MockEmailSink, "_deliver", DeadEmailSink._deliver)
 
         settings = load_settings()
         settings.model_backend = "heuristic"
         settings.email_provider = "mock"
+        settings.storage_provider = "simulated"
+        settings.storage_execute_mode = "dry_run"
 
         scenario, world, signals = load_scenario("schema_drift")
         outcome, rt, _final = run_incident(
@@ -198,3 +206,14 @@ class TestIncidentSurvivesADeadMailer:
         _outcome, rt = outcome_and_runtime
         actions = {event.action for event in rt.chain.events}
         assert "approval_request_undelivered" in actions
+
+    def test_the_test_never_touches_real_storage(self, outcome_and_runtime) -> None:
+        """The guard above, asserted rather than assumed.
+
+        Without this, the pin is a comment: someone adds a setting, the fixture keeps
+        passing, and the first sign of trouble is a missing object in a real bucket.
+        """
+        from aegis.platform.storage import SimulatedStorage
+
+        _outcome, rt = outcome_and_runtime
+        assert isinstance(rt.storage, SimulatedStorage)

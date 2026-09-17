@@ -19,6 +19,7 @@ The agents never see `GroundTruth` or `narrative`.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -146,9 +147,26 @@ def _perturb_latest(
         point.credits = round(point.credits * credits_factor, 3)
 
 
+def _raw_bucket() -> str:
+    """The landing bucket, from the environment.
+
+    These names were hard-coded here while the store was in-memory, where a name is
+    just a label. The moment `S3Storage` went live they became the actual target of a
+    copy-then-delete, and `settings.raw_bucket` -- which `build_runtime` was already
+    reading and passing around as `ZoneLayout` -- turned out to configure nothing.
+    S3 bucket names are globally unique, so "aegis-raw" is not a name anyone can
+    reliably have; it has to be settable. Same defaults as `config.py`.
+    """
+    return os.environ.get("AEGIS_RAW_BUCKET", "aegis-raw")
+
+
+def _quarantine_bucket() -> str:
+    return os.environ.get("AEGIS_QUARANTINE_BUCKET", "aegis-quarantine")
+
+
 def _quarantine(world: World, file: StoredFile, reason: str) -> QuarantineRecord:
     file.quarantined = True
-    file.quarantine_uri = f"s3://aegis-quarantine/{file.key}"
+    file.quarantine_uri = f"s3://{_quarantine_bucket()}/{file.key}"
     return QuarantineRecord(
         file_id=file.file_id,
         quarantined_at=world.now - timedelta(minutes=8),
@@ -167,7 +185,7 @@ def _build_schema_drift(world: World) -> ScenarioSignals:
     arrival = world.now - timedelta(minutes=12)
     stored = StoredFile(
         file_id="FILE-20260917-STRIPE-0001",
-        bucket="aegis-raw",
+        bucket=_raw_bucket(),
         key="stripe/2026-09-17/charges-part-0001.parquet",
         source_system="stripe",
         arrived_at=arrival,
@@ -540,7 +558,7 @@ def _build_null_explosion(world: World) -> ScenarioSignals:
     arrival = world.now - timedelta(minutes=35)
     stored = StoredFile(
         file_id="FILE-20260917-SFDC-0007",
-        bucket="aegis-raw",
+        bucket=_raw_bucket(),
         key="salesforce/2026-09-17/accounts-delta.parquet",
         source_system="salesforce",
         arrived_at=arrival,
@@ -830,7 +848,7 @@ def _ad_spend_drift(world: World, *, rename: tuple[str, str], file_seq: str) -> 
     arrival = world.now - timedelta(minutes=18)
     stored = StoredFile(
         file_id=f"FILE-ADBRIDGE-{file_seq}",
-        bucket="aegis-raw",
+        bucket=_raw_bucket(),
         key=f"adbridge/{world.now.date().isoformat()}/spend-daily.parquet",
         source_system="adbridge",
         arrived_at=arrival,

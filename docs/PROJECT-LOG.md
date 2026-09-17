@@ -585,6 +585,79 @@ cheap reason.
 
 ---
 
+### Bug 15, and S3 as a real landing zone — 17 Sep
+
+Quarantine was a flag. `StorageClient` made it a move, but only against the in-memory
+store; pointing it at a real bucket surfaced a defect the simulation could not.
+
+`build_runtime` read `settings.raw_bucket` / `settings.quarantine_bucket`, built a
+`ZoneLayout`, and passed it into the runtime as `rt.zones` — where **nothing used it**.
+The quarantine node moved `record.original_uri` → `record.quarantine_uri`, and both were
+hard-coded in `scenarios.py` as `s3://aegis-raw/…` and `s3://aegis-quarantine/…`. The
+setting existed, was read, was plumbed through, and could not change the outcome.
+
+The same shape as defect 5 — the autonomy ladder that computed a decision nothing routed
+on. Configuration that cannot alter behaviour is decoration. It stayed invisible because
+in an in-memory store a bucket name is a label; the moment `S3Storage` went live it
+became the target of a copy-then-delete, and **S3 bucket names are globally unique**, so
+`aegis-raw` is not a name anyone can reliably have.
+
+**Fix:** `scenarios.py` reads `AEGIS_RAW_BUCKET` / `AEGIS_QUARANTINE_BUCKET` with the same
+defaults as `config.py`. `ZoneLayout` itself is still unused — its incident-keyed
+quarantine path (`quarantine/<incident>/<source>/<file>`) is better than the flat key in
+use today, because two incidents quarantining the same file currently collide. Recorded
+rather than fixed: it is a real improvement, not a correctness bug, and it was found on
+deliverable day.
+
+**Two further silent-fallback fixes, same family as defects 9 and 14.** The run banner
+now prints `storage: s3 (live)` or `simulated`, because an unset `AEGIS_STORAGE_PROVIDER`
+falls back to the in-memory store and a run that moved nothing printed the identical
+line as one that moved 6MB. And the quarantine trace now says what happened to the bytes
+— `object moved to s3://…`, `dry run — would move to …`, or `containment incomplete — …`
+— in the *message*, not just the event detail the printer never shows. Three times now
+the same lesson: **anything that can quietly degrade has to say so where someone is
+looking.**
+
+**The zones are real.** `scripts/seed_s3.py` writes genuine parquet with the genuine
+schemas: the v4 Stripe object actually has no `currency_code` column, so the most literal
+claim in the demo can be verified by downloading the file. A *valid* v3 file is seeded
+beside it — nothing reads it today, because the containment decision is still made by the
+scenario rather than by inspecting the object, but it is the fixture the validator that
+*should* make that decision will need.
+
+Verified end to end: 6,268,765 bytes left `cg-aegis-raw-…` and arrived in
+`cg-aegis-quarantine-…`, with the valid file untouched beside it.
+
+**One demo hazard, recorded because it was nearly discovered live.** A live move is
+destructive by design — copy, delete the source, and refuse to overwrite an existing
+target so one incident cannot erase another's evidence. Both correct; together they make
+the demo non-repeatable. `scripts/seed_s3.py --reset` empties quarantine and restores the
+landing zone. **Rehearsing a destructive demo without a reset is how you find this out in
+front of an audience.**
+
+**And the one that nearly did real damage.** Chaitanya asked, plainly, *"if I run the
+test are the same files going to execute?"* — and the answer was yes. The end-to-end
+fixture in `test_delivery_failure.py` calls `load_settings()`, which reads the ambient
+environment. It pinned `model_backend` and `email_provider`, because those were the
+interesting variables the day it was written. It did not pin storage. With
+`AEGIS_STORAGE_PROVIDER=s3` and `AEGIS_STORAGE_EXECUTE_MODE=live` exported, `pytest`
+would have built a real `S3Storage`, moved the seeded object into quarantine, and
+deleted the source — the test suite quietly eating the demo fixture, hours before the
+demo.
+
+It had not fired yet only because the previous run happened while the shell was still in
+`dry_run`. `test_storage.py` was never at risk: it injects an `_ExplodingS3` that raises
+if anything real is attempted, which is how the file should have been written in the
+first place.
+
+**Fix:** pin `storage_provider` and `storage_execute_mode` in the fixture, and assert the
+pin (`test_the_test_never_touches_real_storage`) rather than trusting a comment. **A test
+that reads ambient configuration has to pin all of it, not the parts that were
+interesting on the day it was written** — and a safe default is only safe if it holds in
+the contexts you forgot about.
+
+---
+
 ## 9c. Branch `aws-deployment` — storage layer, 17 Sep
 
 Optional production-path work, on a branch. **`main` remains the demo state.**

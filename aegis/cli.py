@@ -321,6 +321,18 @@ def main(argv: list[str] | None = None) -> int:
     mode = email_mode(settings)
     backend.append("    email: ", style="dim")
     backend.append(mode, style="bold green" if mode == "ses" else "bold yellow")
+    # Storage gets the same treatment, and for the same reason: an unset
+    # AEGIS_STORAGE_PROVIDER silently falls back to the in-memory store, and a run
+    # that moved nothing looks exactly like a run that moved a real object.
+    store = settings.storage_provider
+    backend.append("    storage: ", style="dim")
+    backend.append(store, style="bold green" if store == "s3" else "bold yellow")
+    if store == "s3":
+        live = settings.storage_execute_mode == "live"
+        backend.append(
+            f" ({settings.storage_execute_mode})",
+            style="bold green" if live else "bold yellow",
+        )
     console.print(backend)
 
     keys = (

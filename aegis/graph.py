@@ -264,6 +264,10 @@ def build_graph(rt: Runtime):  # noqa: C901 -- the topology is the point
                 "dry_run": moved.dry_run,
             },
         )
+        # Say what happened to the bytes, every time, in the visible message rather
+        # than only in the event detail. The trace is what a reviewer reads; a run
+        # that never touched S3 and a run that moved a 6MB object were printing the
+        # identical line, which makes "quarantined" an unverifiable claim.
         if not moved.ok:
             # A failed move is not a failed incident, but it must not be silent: the
             # file is still where the loader can see it, and saying "quarantined" when
@@ -271,9 +275,23 @@ def build_graph(rt: Runtime):  # noqa: C901 -- the topology is the point
             # finding in itself.
             rt.trace.emit(
                 "quarantine",
-                "system",
+                "storage",
                 f"containment incomplete -- {moved.detail}",
                 {"file_id": record.file_id, "from": moved.source_uri},
+            )
+        elif moved.dry_run:
+            rt.trace.emit(
+                "quarantine",
+                "storage",
+                f"dry run -- would move to {moved.target_uri} (nothing touched)",
+                {"file_id": record.file_id, "target": moved.target_uri, "dry_run": True},
+            )
+        else:
+            rt.trace.emit(
+                "quarantine",
+                "storage",
+                f"object moved to {moved.target_uri}",
+                {"file_id": record.file_id, "target": moved.target_uri},
             )
         rt.chain.append(
             actor="ingestion",
