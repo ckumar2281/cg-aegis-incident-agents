@@ -47,9 +47,10 @@ class PlatformClient(Protocol):
 
     `SimulatedPlatform` below is the implementation everything runs against: the CLI,
     the eval harness and every test. `snowflake.SnowflakePlatform` implements the same
-    protocol against a real warehouse, and **has never been executed against a live
-    account** -- it is imported by nothing, so it cannot influence a scored result.
-    `scripts/check_snowflake.py` is what turns that into a verified claim.
+    protocol against a real warehouse and **has been verified against a live Snowflake
+    account** (17 Sep 2026, 13 of 14 methods returning real rows; the fourteenth a true
+    negative). It is still imported by nothing, so no scored result depends on it --
+    the simulation remains the thing under test, deliberately.
 
     The seam is the point: the agents call these fourteen methods and nothing else, so
     swapping the simulation for a warehouse changes no agent code. Stated here rather

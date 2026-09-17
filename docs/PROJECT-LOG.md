@@ -698,8 +698,73 @@ passing — several methods return nothing on a bare account because the optiona
 mistake defect 12 was. `--grants` prints the least-privilege role, which grants no
 INSERT, UPDATE, DELETE, TRUNCATE or DROP.
 
-**Next step:** a Snowflake trial, then paste that output here. Until then the claim is
-"written".
+### Verified — 17 Sep, Snowflake Enterprise trial
+
+Seeded with `scripts/seed_snowflake.sql` (one database, `CG_AEGIS_DEMO`: a two-hop
+lineage chain, governance tags, three scheduled DMFs, a task, a COPY through a stage,
+and the read-only `AEGIS_AGENT` role). Then `check_snowflake.py` against three assets.
+
+**13 of 14 methods returned real rows. Zero failures.**
+
+| Method | Proven on | Evidence |
+|---|---|---|
+| `asset` + tags | both | tier, owner, SLA, financial flag resolved via `TAG_REFERENCES` |
+| `lineage_upstream` | `MART.DAILY_REVENUE` | 1 row |
+| `lineage_downstream` | `RAW.STRIPE_CHARGES` | 2 rows, with depth |
+| `task_runs` | `MART.DAILY_REVENUE` | 5 rows |
+| `copy_history` | `RAW.STRIPE_CHARGES_LANDING` | 1 row |
+| `dmf_results` | `RAW.STRIPE_CHARGES` | 19 rows |
+| `metric_summary` | `RAW.STRIPE_CHARGES` | composed from DMF history |
+| `schema_diff` | both | after the rewrite below |
+| `changes` | both | 11 DDL rows from `QUERY_HISTORY` |
+| `consumers` | `RAW.STRIPE_CHARGES` | 2 rows from `ACCESS_HISTORY` |
+| `health` | both | composed |
+| `execute` dry run / `drop_table` refused | both | guards held |
+| `failed_runs` | — | **true negative**: nothing had failed |
+
+Every remaining EMPTY is a true negative rather than a gap. `lineage_upstream` on
+`RAW.STRIPE_CHARGES` is empty because a source table has no upstream; `dmf_results` on
+the view is empty because the DMFs are scheduled on the base table; `consumers` there
+because nobody had queried it in seven days. Distinguishing those from failures is the
+entire reason the preflight reports EMPTY as its own category.
+
+### Two defects a simulation could not have found
+
+**`task_runs` filtered `TASK_HISTORY` by the asset's schema.** That is how the simulated
+warehouse is laid out; it is not how a real one is. The task refreshing
+`MART.DAILY_REVENUE` lives in `OPS`, so the method reported **zero task runs for a table
+whose task had just executed** — a confident, plausible, wrong answer, the worst kind.
+Now matched on what the task touches (its query text) rather than where it is defined.
+
+**`schema_diff` assumed `ACCOUNT_USAGE.COLUMNS` had a `CREATED` column.** It has 47
+columns and exactly one timestamp: `DELETED`. Snowflake records when a column went away
+and **not** when one arrived, so a now-versus-then diff is only half available.
+
+The fix is the interesting part. The available half is the half that matters — drift that
+breaks a pipeline is a vendor *removing* or *renaming* a column, which is exactly what a
+deletion records. But the result now carries `additions_observable: False` rather than an
+empty `added_columns` list, so a caller can tell *"none were added"* from *"this source
+cannot see additions"*. An agent that cannot make that distinction will confidently rule
+out the real cause. Rename detection is honestly weaker too: without a created timestamp
+the surviving column cannot be confirmed as new, so same-typed survivors are
+`candidate_renames`, not `likely_renames`.
+
+### One overstatement corrected
+
+This log and the module header said `ACCOUNT_USAGE` carries "up to ~2 hours" of latency
+and warned a fresh account might show nothing for two to three hours. Measured:
+`OBJECT_DEPENDENCIES` and `ACCESS_HISTORY` populated in **well under an hour**. The
+documented figure is a ceiling, not an expectation — reworded to say so. Still a ceiling
+an incident cannot plan around, which is why operational history uses the latency-free
+table functions.
+
+### What this changes about the claim
+
+"The data platform is simulated" was the weakest sentence in the project. It is now:
+*the platform is simulated by choice, and the Snowflake client that would replace it has
+been run against a real warehouse.* The eval suite deliberately still scores against the
+simulation — a suite whose answers depend on a live account goes red when somebody else
+alters a table.
 
 ---
 

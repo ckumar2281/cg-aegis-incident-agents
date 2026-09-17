@@ -557,20 +557,19 @@ opened — the test proves the absence of a thing.
 Stated plainly, because a POC that claims no weaknesses invites someone to find them for
 you.
 
-- **The platform is simulated, and the Snowflake backend is written but unverified.**
+- **The platform is simulated; the Snowflake backend is written and now verified.**
   A 33-asset warehouse with deterministic lineage, task history and metrics stands in for
-  the real thing, and every scored result comes from it. `SnowflakePlatform` now exists
-  (`aegis/platform/snowflake.py`) and implements the whole protocol against
+  the real thing, and **every scored result still comes from it** — that separation is
+  deliberate, because a suite whose answers depend on a live account is a suite that goes
+  red when someone else changes a table. `SnowflakePlatform`
+  (`aegis/platform/snowflake.py`) implements the whole protocol against
   `INFORMATION_SCHEMA` table functions, `ACCOUNT_USAGE` and
-  `DATA_QUALITY_MONITORING_RESULTS` — **and it has never been run.** The view and column
-  names were checked against Snowflake's current documentation; that is not the same as
-  executing them. Nothing imports the module, so it cannot influence a single eval check.
-  `scripts/check_snowflake.py` closes the gap by calling every method against a live
-  account and reporting empties separately from passes. Until that output is pasted into
-  the project log, the correct phrase is "written, not verified" — and three things it
-  cannot get from Snowflake at all are named in the file's own header: asset tier and
-  ownership (object tags), deploys and pull requests (the VCS), and per-asset credit
-  attribution.
+  `DATA_QUALITY_MONITORING_RESULTS`, and was **verified against a live Snowflake account
+  on 17 Sep**: 13 of 14 methods returned real rows, the fourteenth (`failed_runs`) a true
+  negative. `scripts/check_snowflake.py` reproduces it and reports empties separately
+  from passes. Three things it cannot get from Snowflake at all are named in the file's
+  own header: asset tier and ownership (object tags), deploys and pull requests (the
+  VCS), and per-asset credit attribution.
 - **Approvals resolve synchronously in the demo.** Real asynchronous operation —
   emails out, incident suspended, resumed by a signed callback — is designed
   (`PendingResponder`, signed single-use tokens) but the callback endpoint is not built.

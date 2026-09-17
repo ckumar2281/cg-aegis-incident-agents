@@ -248,12 +248,12 @@ Python 3.10+ · LangGraph · Pydantic v2 · Amazon Bedrock (Claude)
 Bedrock is wired and runs for real with `--bedrock`. The data platform is **simulated**:
 everything that scores a result runs against `SimulatedPlatform`.
 
-`aegis/platform/snowflake.py` is a full `PlatformClient` over `ACCOUNT_USAGE`,
-`INFORMATION_SCHEMA` and `DATA_QUALITY_MONITORING_RESULTS` — **written, and never executed
-against a live account.** Nothing imports it, so it cannot affect a scored result;
-`scripts/check_snowflake.py` exercises every method against a real account and prints what
-worked, what came back empty and what raised. Until that output exists, "written" is the
-whole claim.
+`aegis/platform/snowflake.py` is a full `PlatformClient` over `INFORMATION_SCHEMA`,
+`ACCOUNT_USAGE` and `DATA_QUALITY_MONITORING_RESULTS` — **verified against a live
+Snowflake account**: 13 of 14 methods returned real rows, the fourteenth a true negative.
+Two defects surfaced doing it, both of a kind a simulation cannot expose. Nothing imports
+it, so the scored results still come from the simulation; `scripts/check_snowflake.py`
+reproduces the verification in about a minute.
 
 The integrations (SES, Jira, ServiceNow, GitHub) have real adapters and run mocked until
 credentials are supplied.

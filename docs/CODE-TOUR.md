@@ -211,10 +211,13 @@ previously have failed.
 > **No, and say so plainly.** The data platform is simulated. `platform/client.py`
 > defines a `PlatformClient` protocol and `SimulatedPlatform` is the only implementation;
 > a Snowflake one would implement the same protocol against `ACCOUNT_USAGE` views and
-> Horizon lineage. It **is written** — `aegis/platform/snowflake.py` — and has **never been
-> run against a live account**, which is a different claim and the one to make. Nothing
-> imports it, so no scored result depends on it, and `scripts/check_snowflake.py` verifies
-> it in about a minute once credentials exist. Bedrock is real. The integrations — SES, Jira,
+> Horizon lineage. It **is written and verified** — `aegis/platform/snowflake.py`, run
+> against a live Snowflake account on 17 Sep, 13 of 14 methods returning real rows.
+> Verifying it found two defects a simulation could not have: task history filtered by
+> the wrong schema, and a metadata column that does not exist. Nothing imports it, so the
+> scored results still come from the simulation — that separation is deliberate.
+> `scripts/check_snowflake.py` reproduces the whole verification in a minute. Bedrock is
+> real. The integrations — SES, Jira,
 > ServiceNow, GitHub — have real adapters and run mocked until credentials are supplied.
 > Do not soften this. It is the single easiest thing to get caught on, and the protocol
 > boundary is the honest answer to why it would not be a rewrite.

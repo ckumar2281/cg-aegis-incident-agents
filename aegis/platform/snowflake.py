@@ -1,13 +1,24 @@
 """
 A Snowflake-backed implementation of `PlatformClient`.
 
-**Status: written, never executed against a live Snowflake account.** Read that twice
-before quoting this file as evidence of anything. It is a considered mapping from the
-agents' needs onto views Snowflake actually publishes, with the column names checked
-against the current documentation -- and it is completely untested. `scripts/check_snowflake.py`
-exercises every method against a real account and prints what worked; until someone has
-run it and pasted the output into `PROJECT-LOG.md`, the honest description of this file
-is "the interface a real implementation would fill, filled in".
+**Status: verified against a live Snowflake account, 17 Sep 2026.** Thirteen of the
+fourteen protocol methods returned real rows from a real warehouse; the fourteenth
+(`failed_runs`) is a true negative -- nothing had failed. Two defects were found in the
+process and both are recorded below, because a verification that found nothing would
+have been a weak verification.
+
+Run `scripts/check_snowflake.py --asset <schema.table>` to reproduce. It reports EMPTY
+separately from OK on purpose: several methods return nothing on a bare account, and
+counting that as a pass is the exact self-deception this project's defect log is about.
+
+**Two things the first live run corrected, both invisible in a simulation:**
+
+1. `task_runs` filtered `TASK_HISTORY` by the asset's *schema*. That is how the
+   simulated warehouse is arranged and not how a real one is -- the task refreshing
+   `MART.DAILY_REVENUE` lives in `OPS`. It reported zero runs for a table whose task
+   had just executed. Now matched on what the task touches, not where it is defined.
+2. `schema_diff` assumed `ACCOUNT_USAGE.COLUMNS` had a `CREATED` column. It has
+   `DELETED` and nothing else. See that method for what follows from it.
 
 Nothing imports it by default. `SimulatedPlatform` remains what the CLI, the eval
 harness and the tests run against, so this file cannot affect a single scored result.
@@ -19,7 +30,10 @@ harness and the tests run against, so this file cannot affect a single scored re
 **1. Freshness over depth, where the two conflict.**
 
 `SNOWFLAKE.ACCOUNT_USAGE` is the obvious source -- 365 days of history, everything in
-one place. It also carries **up to ~2 hours of latency**, and ~45 minutes is typical.
+one place. It also carries latency: Snowflake documents up to ~2-3 hours depending on
+the view. Measured on a fresh trial account, `OBJECT_DEPENDENCIES` and `ACCESS_HISTORY`
+populated in well under an hour, so the documented figure is a ceiling rather than an
+expectation -- but it is a ceiling an incident cannot plan around.
 An incident-response agent reading a 2-hour-old view is diagnosing the recent past, and
 the incidents this system is built for are minutes old. So the operational history
 methods read the `INFORMATION_SCHEMA` **table functions** (`TASK_HISTORY`,
@@ -200,7 +214,7 @@ class SnowflakePlatform:
             password=os.environ.get("SNOWFLAKE_PASSWORD"),
             private_key_file=os.environ.get("SNOWFLAKE_PRIVATE_KEY_FILE"),
             role=os.environ.get("SNOWFLAKE_ROLE", "AEGIS_AGENT"),
-            warehouse=os.environ.get("SNOWFLAKE_WAREHOUSE", "AEGIS_WH"),
+            warehouse=os.environ.get("SNOWFLAKE_WAREHOUSE", "CG_AEGIS_WH"),
             database=os.environ.get("SNOWFLAKE_DATABASE"),
             client_session_keep_alive=False,
         )
@@ -369,11 +383,19 @@ class SnowflakePlatform:
             FROM TABLE({db}.INFORMATION_SCHEMA.TASK_HISTORY(
                 SCHEDULED_TIME_RANGE_START => DATEADD('hour', -{int(hours)}, CURRENT_TIMESTAMP())
             ))
-            WHERE schema_name = %s
+            WHERE query_text ILIKE %s OR name ILIKE %s
             ORDER BY scheduled_time DESC
             """,
-            (schema,),
+            (f"%{table}%", f"%{table}%"),
         )
+        # Tasks are matched by what they *touch*, not by where they live. The first
+        # version filtered TASK_HISTORY on the asset's schema, which is how the
+        # simulated warehouse is arranged and not how a real one is: the task that
+        # refreshes MART.DAILY_REVENUE sits in OPS. The first live run duly reported
+        # zero task runs for a table whose task had just executed. Matching on the
+        # task's query text is a heuristic -- named as one -- but it finds the task
+        # that reads or writes the table wherever it happens to be defined.
+        #
         # TASK_HISTORY says whether a task ran and whether it failed. It does not say
         # how many rows it wrote or what it cost -- those live on the query. One extra
         # round trip is cheaper than joining ACCOUNT_USAGE and inheriting its latency.
@@ -384,8 +406,6 @@ class SnowflakePlatform:
             # where we have it and fall back to a name-contains heuristic. Named as a
             # heuristic because that is what it is.
             stat = stats.get(r.get("query_id"), {})
-            if table not in (r["name"] or "").upper() and stat.get("target") != table:
-                continue
             started = r.get("query_start_time") or r.get("scheduled_time")
             completed = r.get("completed_time")
             out.append(
@@ -616,17 +636,28 @@ class SnowflakePlatform:
 
     def schema_diff(self, asset: str, lookback_days: int = 30) -> dict[str, Any]:
         """
-        Now versus `lookback_days` ago, from `ACCOUNT_USAGE.COLUMNS`.
+        What columns this table has *lost* recently, from `ACCOUNT_USAGE.COLUMNS`.
 
-        Snowflake keeps no schema-version history, but `ACCOUNT_USAGE.COLUMNS` retains
-        dropped columns with a `DELETED` timestamp and added ones with `CREATED`. That
-        is enough to reconstruct the diff, which is what the change correlator needs --
-        it asks "what changed about this table", not "show me every past version".
+        The honest scope, learned the hard way on the first live run: that view has a
+        `DELETED` timestamp and **no `CREATED` timestamp**. Snowflake records when a
+        column went away and not when one arrived. The first version of this method
+        assumed both and failed with `invalid identifier 'CREATED'`.
+
+        So the now-versus-then diff is only half available -- and, as it happens, the
+        half that matters. The drift that breaks a pipeline is a vendor *removing* or
+        *renaming* a column, which surfaces here as a deletion. A new column appearing
+        is additive and rarely breaks a load.
+
+        What cannot be determined is stated in the result rather than quietly returned
+        as an empty list: `added_columns` and `retyped_columns` are always empty and
+        `additions_observable` is False, so a caller can tell "none were added" apart
+        from "this source cannot see additions". Inventing the difference is how an
+        agent ends up confidently ruling out the actual cause.
         """
         db, schema, table = self._split(asset)
         rows = self._rows(
             f"""
-            SELECT column_name, data_type, created, deleted
+            SELECT column_name, data_type, deleted
             FROM SNOWFLAKE.ACCOUNT_USAGE.COLUMNS
             WHERE table_catalog = %s AND table_schema = %s AND table_name = %s
               AND (deleted IS NULL
@@ -637,47 +668,36 @@ class SnowflakePlatform:
         if not rows:
             return {"asset": asset, "changed": False, "versions": 0}
 
-        cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+        present = {r["column_name"]: r["data_type"] for r in rows if r.get("deleted") is None}
+        removed_rows = [r for r in rows if r.get("deleted") is not None]
+        removed = sorted({r["column_name"] for r in removed_rows})
+        removed_types = {r["column_name"]: r["data_type"] for r in removed_rows}
 
-        def present_now(r: dict[str, Any]) -> bool:
-            return r.get("deleted") is None
-
-        def present_then(r: dict[str, Any]) -> bool:
-            created = r.get("created")
-            return created is not None and created <= cutoff and (
-                r.get("deleted") is None or r["deleted"] > cutoff
-            )
-
-        now_cols = {r["column_name"]: r["data_type"] for r in rows if present_now(r)}
-        then_cols = {r["column_name"]: r["data_type"] for r in rows if present_then(r)}
-        added = sorted(set(now_cols) - set(then_cols))
-        removed = sorted(set(then_cols) - set(now_cols))
-        retyped = sorted(
-            c for c in set(now_cols) & set(then_cols) if now_cols[c] != then_cols[c]
-        )
-        # Same-typed add plus remove in one window is the classic vendor rename. Stated
-        # as "likely" because it is an inference, not an observation.
-        likely_renames = [
-            {"from": r, "to": a}
-            for r in removed
-            for a in added
-            if then_cols[r] == now_cols[a]
+        # A removed column paired with a same-typed column still present is the classic
+        # vendor rename. Weaker than the simulated platform's version, which can see
+        # both sides: here the surviving column cannot be confirmed as *new*, so any
+        # same-typed column is a candidate. Labelled "candidate" for that reason.
+        candidate_renames = [
+            {"from": gone, "to": kept}
+            for gone in removed
+            for kept, kept_type in present.items()
+            if removed_types[gone] == kept_type
         ]
-        changed_at = max(
-            (r.get("deleted") or r.get("created") for r in rows if present_now(r) or True),
-            default=None,
-        )
+        last_change = max((r["deleted"] for r in removed_rows), default=None)
         return {
             "asset": self._short(schema, table),
-            "changed": bool(added or removed or retyped),
-            "from_version": f"observed-{cutoff.date()}",
+            "changed": bool(removed),
+            "from_version": f"observed-{lookback_days}d",
             "to_version": "current",
-            "observed_at": self._iso(changed_at),
-            "added_columns": added,
+            "observed_at": self._iso(last_change),
+            "added_columns": [],
             "removed_columns": removed,
-            "retyped_columns": retyped,
-            "likely_renames": likely_renames,
-            "contract_version": f"observed-{cutoff.date()}",
+            "retyped_columns": [],
+            "likely_renames": candidate_renames,
+            "contract_version": self._declared_version(schema, table),
+            #: False means "this source cannot see additions", not "there were none".
+            "additions_observable": False,
+            "current_columns": sorted(present),
         }
 
     # -- change correlation ------------------------------------------------- #
