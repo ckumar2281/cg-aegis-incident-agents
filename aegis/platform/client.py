@@ -45,10 +45,15 @@ class PlatformClient(Protocol):
     """
     The seam between the agent layer and reality.
 
-    `SimulatedPlatform` below is the only implementation today. A Snowflake-backed one
-    would implement this same protocol -- the agents call nothing else -- but it is not
-    written yet. Documented here rather than implied, so the gap is visible in the code
-    and not only in the limitations section of a document.
+    `SimulatedPlatform` below is the implementation everything runs against: the CLI,
+    the eval harness and every test. `snowflake.SnowflakePlatform` implements the same
+    protocol against a real warehouse, and **has never been executed against a live
+    account** -- it is imported by nothing, so it cannot influence a scored result.
+    `scripts/check_snowflake.py` is what turns that into a verified claim.
+
+    The seam is the point: the agents call these fourteen methods and nothing else, so
+    swapping the simulation for a warehouse changes no agent code. Stated here rather
+    than only in a document, so the gap is visible where someone would trip over it.
     """
 
     def asset(self, name: str) -> dict[str, Any]: ...

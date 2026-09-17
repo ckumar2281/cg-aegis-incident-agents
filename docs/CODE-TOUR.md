@@ -211,7 +211,10 @@ previously have failed.
 > **No, and say so plainly.** The data platform is simulated. `platform/client.py`
 > defines a `PlatformClient` protocol and `SimulatedPlatform` is the only implementation;
 > a Snowflake one would implement the same protocol against `ACCOUNT_USAGE` views and
-> Horizon lineage, and **is not written**. Bedrock is real. The integrations — SES, Jira,
+> Horizon lineage. It **is written** — `aegis/platform/snowflake.py` — and has **never been
+> run against a live account**, which is a different claim and the one to make. Nothing
+> imports it, so no scored result depends on it, and `scripts/check_snowflake.py` verifies
+> it in about a minute once credentials exist. Bedrock is real. The integrations — SES, Jira,
 > ServiceNow, GitHub — have real adapters and run mocked until credentials are supplied.
 > Do not soften this. It is the single easiest thing to get caught on, and the protocol
 > boundary is the honest answer to why it would not be a rewrite.
@@ -231,7 +234,9 @@ previously have failed.
 > and the eval suite cost nothing because they run on the heuristic backend.
 
 **"What would you do next?"**
-> Write the real `SnowflakePlatform` against the protocol. Then replace the scripted
+> Run `scripts/check_snowflake.py` against a trial account and fix whatever the real
+> warehouse disagrees with — the client is written, and every unverified line of it is a
+> guess until that output exists. Then replace the scripted
 > approvals with real SES email and signed links — `approvals.py` L80 `TokenMinter`
 > already mints and verifies HMAC tokens with a TTL, so the mechanism exists and only
 > delivery is mocked. Then AgentCore Runtime, where the one real architectural change is

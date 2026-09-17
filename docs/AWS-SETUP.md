@@ -336,6 +336,45 @@ configuration to wherever the request was ultimately served.
 incident is a few hundred KB, so a whole demo week is cents. Set the log group's
 retention to **1 day** anyway — it is one click and it means you cannot forget about it.
 
+### Optional — also archive the logs to S3
+
+CloudWatch is the right place to *query* the logs; S3 is the right place to *keep* them.
+Adding S3 alongside gets records that outlive the log group's retention, payloads over
+100 KB captured rather than dropped, and an Athena-queryable history.
+
+1. **Create the bucket** in the same region (`us-east-1`), Block Public Access on:
+   `aegis-bedrock-logs-<account-id>`
+2. **Add the bucket policy first** — before pointing Bedrock at it. Without it the save
+   may fail validation, or succeed and silently drop every delivery:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Sid": "AmazonBedrockLogsWrite",
+    "Effect": "Allow",
+    "Principal": { "Service": "bedrock.amazonaws.com" },
+    "Action": ["s3:PutObject"],
+    "Resource": "arn:aws:s3:::<bucket>/invocations/AWSLogs/<account-id>/BedrockModelInvocationLogs/*",
+    "Condition": { "StringEquals": { "aws:SourceAccount": "<account-id>" } }
+  }]
+}
+```
+
+3. **Bedrock → Settings → Model invocation logging** → destination **Both S3 and
+   CloudWatch Logs**, S3 location `s3://<bucket>/invocations`.
+
+Keep CloudWatch in the pair rather than switching to S3 only — the per-agent query below
+runs against the log group, and S3 alone would mean standing up Athena to ask the same
+question.
+
+**Verify:** after the next run, `ModelInvocationLogsS3DeliverySuccess` should appear in
+the `AWS/Bedrock` metrics. A `...S3DeliveryFailure` instead is almost always the bucket
+policy's resource path not matching the configured prefix exactly.
+
+Cost: ~$0.023/GB-month. A demo week is a rounding error. Set a lifecycle rule to expire
+objects after 30 days if it is going to be left switched on.
+
 ### Per-agent cost attribution (the part worth showing)
 
 Every Converse call Aegis makes carries `requestMetadata` tags — `incident`, `agent` and

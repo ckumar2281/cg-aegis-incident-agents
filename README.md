@@ -155,7 +155,7 @@ python -m aegis.cli run schema_drift        # one incident, live trace
 python -m aegis.cli run --all --report      # whole suite + HTML trace report
 python -m aegis.cli run null_explosion -i   # you play the Product Owner
 python -m evals.harness                     # 118 checks against ground truth
-python -m pytest tests/                     # 82 governance tests
+python -m pytest tests/                     # 94 governance tests
 ```
 
 Current state:
@@ -163,7 +163,7 @@ Current state:
 ```
 8/8 scenarios matched ground truth
 118/118 eval checks passed · 0 governance violations
-82 tests passed
+94 tests passed
 ```
 
 To use real Claude models:
@@ -245,10 +245,18 @@ incident would escalate. They pass only because no gate opened.
 
 Python 3.10+ · LangGraph · Pydantic v2 · Amazon Bedrock (Claude)
 
-Bedrock is wired and runs for real with `--bedrock`. The data platform is **simulated** —
-a Snowflake backend would implement the same `PlatformClient` protocol but is not written
-yet. The integrations (SES, Jira, ServiceNow, GitHub) have real adapters and run mocked
-until credentials are supplied.
+Bedrock is wired and runs for real with `--bedrock`. The data platform is **simulated**:
+everything that scores a result runs against `SimulatedPlatform`.
+
+`aegis/platform/snowflake.py` is a full `PlatformClient` over `ACCOUNT_USAGE`,
+`INFORMATION_SCHEMA` and `DATA_QUALITY_MONITORING_RESULTS` — **written, and never executed
+against a live account.** Nothing imports it, so it cannot affect a scored result;
+`scripts/check_snowflake.py` exercises every method against a real account and prints what
+worked, what came back empty and what raised. Until that output exists, "written" is the
+whole claim.
+
+The integrations (SES, Jira, ServiceNow, GitHub) have real adapters and run mocked until
+credentials are supplied.
 
 `docs/` covers the AWS setup, the architecture, and the AgentCore deployment path.
 
@@ -268,10 +276,11 @@ aegis/
   tools.py         provenance-recording tool belt
   graph.py         LangGraph orchestration
   report.py        self-contained HTML trace report
-  platform/        the simulated warehouse and its scenarios
+  platform/        the simulated warehouse, its scenarios, and the unverified
+                   Snowflake client
   agents/          the nine agents
 evals/harness.py   ground-truth scoring, 118 checks
-tests/             adversarial governance tests, 68 of them
+tests/             adversarial governance tests, 94 of them
 scripts/           setup and preflight utilities
 docs/              see below
 ```

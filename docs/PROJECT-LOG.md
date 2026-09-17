@@ -3,7 +3,7 @@
 **Project:** Agentic DataPOC — "Aegis", governed agentic incident management for data pipelines
 **Owner:** Chaitanya
 **Repo:** `~/projects/aegis`
-**Last updated:** 16 September 2026
+**Last updated:** 17 September 2026
 **Deliverable due:** end of day Thursday 17 September · **Review:** Friday 18 September
 
 > Living document. Covers the brief, design decisions, AWS setup, build progress, and
@@ -621,7 +621,7 @@ Default is the heuristic backend: deterministic, free, no credentials. `--bedroc
 | Precedent-based autonomy | `aegis/precedent.py` |
 | HTML trace report | `aegis/report.py` |
 | Eval harness — 118 checks across 3 families | `evals/harness.py` |
-| Adversarial governance tests — 82 tests | `tests/test_governance.py`, `tests/test_precedent.py`, `tests/test_outbound_boundary.py` |
+| Adversarial governance tests — 94 tests | `tests/test_governance.py`, `tests/test_precedent.py`, `tests/test_outbound_boundary.py` |
 | Architecture writeup | `docs/ARCHITECTURE.md` |
 
 ~12,700 lines. Pushed to
@@ -630,6 +630,76 @@ Default is the heuristic backend: deterministic, free, no credentials. `--bedroc
 ### Remaining ⬜
 
 - AgentCore Runtime deployment notes
+
+---
+
+## 9b. The Snowflake client — written 17 Sep, unverified
+
+`aegis/platform/snowflake.py`, ~600 lines, implements the whole `PlatformClient`
+protocol against a real warehouse. **It has never been executed.** Nothing imports it,
+so it cannot move a single eval check; `SimulatedPlatform` remains what everything runs
+against.
+
+### Why write it unverified at all
+
+Two days of this log are corrections to claims that outran evidence, so the bar for
+adding another was high. It clears it for one reason: *"the platform is simulated"* is
+the weakest sentence in the project, and there are two ways to improve it. Describing
+the queries a real client would issue is talk. Writing them down makes the design
+inspectable, testable in about a minute once credentials exist, and falsifiable — a
+reviewer can read the SQL and tell me it is wrong. The honest phrasing is **"written,
+not verified"**, and every document now says exactly that.
+
+### The two decisions worth defending
+
+**Freshness over depth.** `ACCOUNT_USAGE` is the obvious source — 365 days, everything
+in one place — and it carries **up to ~2 hours of latency**. An incident-response agent
+reading a two-hour-old view is diagnosing the recent past. So operational history comes
+from the latency-free `INFORMATION_SCHEMA` **table functions** (`TASK_HISTORY`,
+`COPY_HISTORY`, `QUERY_HISTORY`), whose 7–14 day retention comfortably covers the 24–72
+hour windows these methods ask for. `ACCOUNT_USAGE` is used only where there is no
+alternative — object dependencies, column history, access history, tags — and each use
+is marked, because staleness means something different in each case.
+
+**`execute()` refuses to write by default.** `execute_mode="dry_run"` renders the SQL
+and runs nothing; `"live"` must be asked for by name. Every mutating action is a
+parameterised template in a fixed allow-list, so an agent picks a key and supplies
+parameters and never composes SQL. **`drop_table` is absent from the allow-list on
+purpose** — the ladder already refuses to pre-authorise it, and not writing the code is
+the second lock.
+
+### What Snowflake genuinely cannot answer
+
+Named rather than papered over, in the module header and in `ARCHITECTURE.md` §9:
+
+| Needed | Snowflake's answer | What this does |
+|---|---|---|
+| Tier, owner, SLA, domain | No native concept | Object **tags**, names configurable |
+| 30-day metric series | No native table | Aggregated from scheduled **DMF results** |
+| Schema history | No native diff | `ACCOUNT_USAGE.COLUMNS` retains dropped columns with a `DELETED` timestamp |
+| Deploys, PRs, vendor notices | Not a warehouse concern | DDL from `QUERY_HISTORY` + an injected VCS feed |
+| Credits per asset | Only per warehouse/query | Cloud-services credits per query; understated, and said so |
+
+`metric_summary` returns `available: False` when no DMFs are scheduled rather than
+inventing a baseline. An agent told "no baseline exists" reasons better than one handed
+a fabricated one.
+
+### What is tested, and what cannot be
+
+`tests/test_snowflake_guards.py` — 12 tests, no connection required. They attack the
+three write locks: dry-run default, allow-list, and the deliberate absence of
+`drop_table`. The read methods cannot be tested without an account, and a pile of mocks
+would only test the mocks.
+
+`scripts/check_snowflake.py` closes the gap: it calls every method against a live
+account and prints OK / **EMPTY** / FAIL per method, reporting empty as distinct from
+passing — several methods return nothing on a bare account because the optional setup
+(tags, scheduled DMFs) is absent, and counting that as success would repeat exactly the
+mistake defect 12 was. `--grants` prints the least-privilege role, which grants no
+INSERT, UPDATE, DELETE, TRUNCATE or DROP.
+
+**Next step:** a Snowflake trial, then paste that output here. Until then the claim is
+"written".
 
 ---
 

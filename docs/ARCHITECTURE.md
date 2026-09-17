@@ -557,15 +557,20 @@ opened — the test proves the absence of a thing.
 Stated plainly, because a POC that claims no weaknesses invites someone to find them for
 you.
 
-- **The platform is simulated, and the Snowflake backend is not written.** A 33-asset
-  warehouse with deterministic lineage, task history and metrics stands in for the real
-  thing. The `PlatformClient` protocol defines the seam a Snowflake implementation would
-  fill — the agents call only that interface, never the simulation directly — but **no
-  `SnowflakePlatform` class exists yet**. `AEGIS_PLATFORM=snowflake` is config for
-  something not yet built. The queries it would issue are known
-  (`ACCOUNT_USAGE.TASK_HISTORY`, `COPY_HISTORY`, `DATA_QUALITY_MONITORING_RESULTS`,
-  Horizon lineage); writing and verifying them against a live account is the next step,
-  not a finished one.
+- **The platform is simulated, and the Snowflake backend is written but unverified.**
+  A 33-asset warehouse with deterministic lineage, task history and metrics stands in for
+  the real thing, and every scored result comes from it. `SnowflakePlatform` now exists
+  (`aegis/platform/snowflake.py`) and implements the whole protocol against
+  `INFORMATION_SCHEMA` table functions, `ACCOUNT_USAGE` and
+  `DATA_QUALITY_MONITORING_RESULTS` — **and it has never been run.** The view and column
+  names were checked against Snowflake's current documentation; that is not the same as
+  executing them. Nothing imports the module, so it cannot influence a single eval check.
+  `scripts/check_snowflake.py` closes the gap by calling every method against a live
+  account and reporting empties separately from passes. Until that output is pasted into
+  the project log, the correct phrase is "written, not verified" — and three things it
+  cannot get from Snowflake at all are named in the file's own header: asset tier and
+  ownership (object tags), deploys and pull requests (the VCS), and per-asset credit
+  attribution.
 - **Approvals resolve synchronously in the demo.** Real asynchronous operation —
   emails out, incident suspended, resumed by a signed callback — is designed
   (`PendingResponder`, signed single-use tokens) but the callback endpoint is not built.

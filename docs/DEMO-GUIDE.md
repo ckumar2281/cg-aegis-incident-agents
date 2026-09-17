@@ -111,7 +111,7 @@ python -m evals.harness
 python -m pytest tests/
 ```
 
-> "118 checks across eight scenarios, 82 tests. The checks are grouped deliberately:
+> "118 checks across eight scenarios, 94 tests. The checks are grouped deliberately:
 > diagnosis, governance, remediation. **The governance ones assert negatives** — that the
 > technical packet was *not* sent before approval, that nothing executed without the
 > gates it needed. Those are the ones that matter, because a wrong diagnosis is a bad

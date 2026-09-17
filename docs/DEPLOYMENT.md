@@ -21,7 +21,7 @@ Snowflake.
 
 | Seam | Local today | Deployed |
 |---|---|---|
-| `PlatformClient` | `SimulatedPlatform` over a seeded world | `SnowflakePlatform` over `ACCOUNT_USAGE` and `INFORMATION_SCHEMA` — **not yet written** |
+| `PlatformClient` | `SimulatedPlatform` over a seeded world | `SnowflakePlatform` over `INFORMATION_SCHEMA` + `ACCOUNT_USAGE` — **written, unverified**; run `scripts/check_snowflake.py` |
 | `ModelClient` | Bedrock via boto3, or the heuristic backend | Unchanged — Bedrock either way |
 | `EmailSink` / `TicketSink` / `VcsClient` | Mock adapters | SES, Jira/ServiceNow, GitHub |
 | `Responder` | `ScriptedResponder` / `ConsoleResponder` | `PendingResponder` + a callback endpoint |
