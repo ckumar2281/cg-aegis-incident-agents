@@ -255,6 +255,26 @@ For a deployed version, roughly in order of necessity:
 | **Secrets Manager** | Snowflake, Jira and GitHub credentials | When integrations go real |
 | **CloudWatch** | Where AgentCore Observability lands the traces | Arrives with Runtime |
 
+### Already in use, for a different job
+
+The table above is about the *pipeline*. Two of those services are already switched on
+for **observability**, which is a separate concern and worth not conflating:
+
+| Service | In use today for |
+|---|---|
+| **CloudWatch Metrics** | `AWS/Bedrock` — call counts, input/output tokens, latency, throttles. Published automatically; no setup, no cost |
+| **CloudWatch Logs** | `/aegis/bedrock` — every Converse request and response, tagged with `incident`, `agent` and `attempt` so Logs Insights can break one incident's spend down per agent |
+| **S3** | `cg-aegis-bedrock-logs-<account>/invocations` — durable archive of the same logs, past CloudWatch retention |
+| **IAM** | `AegisBedrockLoggingRole`, scoped to writing those logs |
+
+Model invocation logging is **off by default** in Bedrock and is a per-region setting —
+enabled in `us-east-1`, which is where the client calls. Setup steps are in
+[`AWS-SETUP.md`](./AWS-SETUP.md) §9.
+
+The reason this is worth having: it is AWS's own record agreeing with the local ledger,
+it makes the fan-out visible as four specialists billed separately, and it demonstrates
+the model tiering as a fact rather than a claim in a config file.
+
 **EventBridge rather than SNS**, because routing here is content-based: a DMF breach on a
 tier-1 asset should be able to take a different path from a freshness warning on a tier-3
 one. SNS fans out to everything and leaves the filtering to the consumer; EventBridge
