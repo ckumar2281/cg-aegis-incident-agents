@@ -14,3 +14,6 @@ requests>=2.31
 
 # Dev
 pytest>=8.0
+
+# Real parquet for the S3 landing zone (scripts/seed_s3.py)
+pyarrow>=17.0
