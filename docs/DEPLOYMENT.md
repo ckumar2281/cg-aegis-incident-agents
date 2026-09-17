@@ -418,9 +418,12 @@ property for marginal convenience.
 
 ## 9. Order of work
 
-1. **Write `SnowflakePlatform`** and verify it against a trial account. The protocol
-   exists and the agents call only through it, so nothing above this layer changes — but
-   the implementation itself does not exist yet
+1. ~~**Write `SnowflakePlatform`** and verify it against a trial account.~~ **Done,
+   17 Sep** — `aegis/platform/snowflake.py`, verified against an Enterprise trial,
+   13 of 14 methods returning real rows (`scripts/check_snowflake.py`). The agents call
+   only through the protocol, so nothing above that layer changed. It is still not in
+   the demo path: `AEGIS_PLATFORM` defaults to `simulated` so the eval suite stays
+   deterministic and offline
 2. `aegis/runtime.py` FastAPI wrapper + Dockerfile + push to ECR
 3. Graph checkpointer, then the approval callback Lambda — the two together are what
    make the approval chain real
