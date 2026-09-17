@@ -29,6 +29,7 @@ from .audit import TraceBus
 from .config import Settings, load_settings
 from .contracts import IncidentOutcome, IncidentState
 from .graph import build_graph, build_runtime, run_incident
+from .integrations import email_mode
 from .platform import SimulatedPlatform, load_scenario
 from .platform.scenarios import ALL_SCENARIOS, SCENARIOS_BY_KEY
 from .precedent import PrecedentStore
@@ -210,6 +211,7 @@ def _summary(outcome: IncidentOutcome, rt, final, scenario) -> None:
         mail.add_column("recipient", style="dim")
         mail.add_column("tier")
         mail.add_column("subject")
+        mail.add_column("delivery")
         for message in rt.email.sent:
             tier_style = "green" if message.tier.value == "business" else "blue"
             mail.add_row(
@@ -218,9 +220,21 @@ def _summary(outcome: IncidentOutcome, rt, final, scenario) -> None:
                 # Escaped: subjects start with "[resolved]" / "[deferred]", which Rich
                 # would otherwise swallow as markup tags.
                 escape(message.subject[:70]),
+                "[dim]sent[/dim]" if message.delivered else "[red]FAILED[/red]",
             )
         console.print(Panel(mail, title="[bold]who was told what[/bold]",
                             border_style="dim", expand=False))
+        # A delivery record is only worth keeping if the failures are as loud as the
+        # successes. One line per distinct transport error, not one per message.
+        failures = rt.email.undelivered()
+        if failures:
+            console.print(
+                f"[red]{len(failures)} of {len(rt.email.sent)} message(s) were not "
+                f"delivered.[/red] The incident ran to completion and the audit trail "
+                f"records who was *not* reached."
+            )
+            for reason in dict.fromkeys(m.delivery_error for m in failures):
+                console.print(f"  [dim]{escape(reason)}[/dim]")
 
 
 def _grade(outcome: IncidentOutcome, scenario) -> tuple[bool, str]:
@@ -304,6 +318,9 @@ def main(argv: list[str] | None = None) -> int:
     else:
         backend.append("  (deterministic, $0 — use --bedrock for real models)", style="dim")
     backend.append(f"    platform: {settings.platform_backend}", style="dim")
+    mode = email_mode(settings)
+    backend.append("    email: ", style="dim")
+    backend.append(mode, style="bold green" if mode == "ses" else "bold yellow")
     console.print(backend)
 
     keys = (

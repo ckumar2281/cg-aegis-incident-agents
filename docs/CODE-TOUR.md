@@ -151,12 +151,12 @@ be attacked, and the answer is that its boundaries are hard-coded and tested.
 
 ## 5. The defect list is the strongest thing you have
 
-`ARCHITECTURE.md` §7 lists **twelve defects found during the build**, with what each one
+`ARCHITECTURE.md` §7 lists **fourteen defects found during the build**, with what each one
 taught. Counter-intuitive, but lead with it if the conversation goes technical: a
-candidate who found eleven bugs in their own work and wrote them down is more credible
+candidate who found fourteen bugs in their own work and wrote them down is more credible
 than one whose demo simply worked.
 
-Three of them are worth being able to tell as a story:
+Four of them are worth being able to tell as a story:
 
 **Defect 5 — the autonomy ladder was decorative.** It computed the decision, traced it,
 audited it, and then `add_edge("plan", "disclose")` ignored it. The trace said
@@ -181,6 +181,27 @@ actually leaves, not the one you happen to have a schema for.**
 
 The eval score went **up** afterwards, 112 → 118, because two of the new checks could not
 previously have failed.
+
+**Defect 14 — a dead mail server killed the incident.** The first run with SES actually
+wired up raised `NoCredentialsError` inside the business gate, and the exception went
+straight out of `graph.invoke()`, taking two minutes of reasoning and the entire audit
+chain with it. The bug was not the missing credential — it was that the code handled a
+broken pipe exactly the way it handles a refused disclosure. **Lesson: fail closed on
+authority, open on plumbing — and never write the `except Exception` that stops you
+telling them apart.**
+
+The governance half is the part to have ready, because it is the question a good reviewer
+asks next: *if the approval email never arrived, was the human asked?* The answer depends
+entirely on where the verdict comes from, so `run_gate` asks the responder
+(`Responder.depends_on_delivery`). In production the human clicks a link in that email,
+so an undelivered request escalates to timeout. In the demo the verdict arrives at the
+terminal, so it stands and the failed send is recorded. **Recording a verdict against a
+request that never arrived would be the system manufacturing its own approval** — the
+resilient-looking fix is the wrong one.
+
+If it comes up live, the cheap demonstration is `AEGIS_MODEL_BACKEND=heuristic` with the
+SES credential removed: two seconds, $0, five `FAILED` rows in the delivery column, and
+`audit chain: 26 events valid` at the bottom.
 
 ---
 

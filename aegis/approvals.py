@@ -140,6 +140,13 @@ class TokenMinter:
 class Responder(ABC):
     """Supplies the human verdict for one approval request."""
 
+    #: True when the verdict comes back through the message we just sent -- the human
+    #: clicks a link in the approval email. For those responders a delivery failure
+    #: means the human was never actually asked. False when the answer arrives through
+    #: some other channel entirely (a terminal prompt, a recorded script), where the
+    #: email is a copy and its failure does not invalidate the verdict.
+    depends_on_delivery: bool = False
+
     @abstractmethod
     def respond(
         self, request: ApprovalRequest, packet: IncidentPacket
@@ -227,6 +234,8 @@ class PendingResponder(Responder):
     the chain can be demonstrated end to end in one run.
     """
 
+    depends_on_delivery = True
+
     def respond(self, request, packet) -> ApprovalResponse | None:
         return None
 
@@ -306,24 +315,57 @@ class ApprovalCoordinator:
             self.requests.append(request)
 
             # Delivery enforces the firewall; a violation raises rather than leaking.
-            self.email.send_approval_request(
+            # A *transport* failure does not raise -- it comes back on the message.
+            message = self.email.send_approval_request(
                 request,
                 technical_released=bundle.technical_released,
                 redaction=self.redaction,
             )
+            detail = {
+                "gate": gate.value,
+                "role": role.value,
+                "recipient": request.recipient,
+                "expires_at": request.expires_at.isoformat(),
+                "request_id": request.request_id,
+                "delivered": message.delivered,
+            }
+            if not message.delivered:
+                detail["delivery_error"] = message.delivery_error
             self.chain.append(
                 actor=AgentRole.APPROVALS.value,
                 actor_kind="agent",
-                action="approval_requested",
-                detail={
-                    "gate": gate.value,
-                    "role": role.value,
-                    "recipient": request.recipient,
-                    "expires_at": request.expires_at.isoformat(),
-                    "request_id": request.request_id,
-                },
+                action="approval_requested" if message.delivered
+                else "approval_request_undelivered",
+                detail=detail,
                 tier=tier,
             )
+
+            if not message.delivered:
+                self.trace.emit(
+                    "gate_undelivered",
+                    AgentRole.APPROVALS.value,
+                    f"approval request to {role.value} was not delivered "
+                    f"({message.delivery_error})",
+                    {"gate": gate.value, "role": role.value,
+                     "error": message.delivery_error},
+                )
+                # Where the inbox *is* the answering channel, an undelivered request
+                # cannot produce a verdict, and recording one anyway would be the
+                # system manufacturing its own approval. Fail it to timeout, which the
+                # gate already knows how to escalate.
+                if self.responder.depends_on_delivery:
+                    self.chain.append(
+                        actor=role.value,
+                        actor_kind="human",
+                        action="approval_timeout",
+                        detail={
+                            "gate": gate.value,
+                            "request_id": request.request_id,
+                            "reason": "approval request was never delivered",
+                        },
+                        tier=tier,
+                    )
+                    continue
 
             response = self.responder.respond(request, packet)
             if response is None:

@@ -11,6 +11,10 @@ be delivered until the business gate has released it.** `EmailSink.send` refuses
 DisclosureTier.TECHNICAL message whose bundle has not been released, and raises rather
 than silently dropping it. Putting the check at the delivery boundary means no future
 code path can leak the fix packet by forgetting to look at a flag.
+
+The second rule is the mirror image: a *transport* failure is recorded, not raised.
+A refused disclosure stops the incident; an unreachable mail server does not. See
+`EmailSink._attempt` for why those two are treated as opposites.
 """
 
 from __future__ import annotations
@@ -66,6 +70,12 @@ class SentMessage:
     #: disclosure rule that the technical packet must wait for business approval
     #: applies to the former; conflating the two hides which one was actually sent.
     kind: str = "notification"
+    #: Whether the transport actually accepted the message. `sent` used to mean
+    #: "we tried"; a run with a broken SES credential recorded seven delivered
+    #: messages and nobody had received any of them. These two fields are the
+    #: difference between an outbox and a delivery record.
+    delivered: bool = True
+    delivery_error: str = ""
 
 
 class EmailSink(ABC):
@@ -114,7 +124,7 @@ class EmailSink(ABC):
             role=request.role.value,
             kind="approval_request",
         )
-        self._deliver(message)
+        self._attempt(message)
         self.sent.append(message)
         return message
 
@@ -165,12 +175,36 @@ class EmailSink(ABC):
             incident_id=incident_id,
             role=role.value,
         )
-        self._deliver(message)
+        self._attempt(message)
         self.sent.append(message)
         return message
 
+    def _attempt(self, message: SentMessage) -> None:
+        """Deliver, recording transport failure rather than raising through the graph.
+
+        Deliberately *not* symmetric with the firewall above. A DisclosureViolation is
+        the control working -- it means we were about to tell the wrong person something,
+        and the only safe response is to stop. It is raised before this method is
+        reached and is never caught here.
+
+        A transport failure is the opposite: the content was correct and permitted, the
+        pipe was broken. Killing a two-minute, $0.15 incident run because SES could not
+        find a credential throws away the analysis and, worse, throws away the audit
+        trail that would have explained why. The honest behaviour is to carry on and
+        record that this specific message did not arrive -- which is what lets the gate
+        logic decide whether a human can still be said to have been asked.
+        """
+        try:
+            self._deliver(message)
+        except Exception as exc:  # noqa: BLE001 - transport failures must not be fatal
+            message.delivered = False
+            message.delivery_error = f"{type(exc).__name__}: {exc}"
+
     @abstractmethod
     def _deliver(self, message: SentMessage) -> None: ...
+
+    def undelivered(self) -> list[SentMessage]:
+        return [m for m in self.sent if not m.delivered]
 
     def for_tier(self, tier: DisclosureTier) -> list[SentMessage]:
         return [m for m in self.sent if m.tier is tier]
@@ -538,9 +572,21 @@ class BacklogStore:
 # --------------------------------------------------------------------------- #
 
 
+def email_mode(settings) -> str:
+    """What the email sink will actually be -- for the run banner, before anything runs.
+
+    The fallback below is correct but silent, and silence cost an afternoon: with
+    AEGIS_SES_SENDER unexported, a run printed five delivered messages and had emailed
+    nobody. Anything that can quietly become a mock has to say so at the top.
+    """
+    if settings.email_provider == "ses" and os.environ.get("AEGIS_SES_SENDER"):
+        return "ses"
+    return "mock"
+
+
 def build_integrations(settings) -> tuple[EmailSink, TicketSink, VcsClient, BacklogStore]:
     """Wire the configured adapters, falling back to mocks when credentials are absent."""
-    if settings.email_provider == "ses" and os.environ.get("AEGIS_SES_SENDER"):
+    if email_mode(settings) == "ses":
         email: EmailSink = SesEmailSink(os.environ["AEGIS_SES_SENDER"], settings.aws_region)
     else:
         email = MockEmailSink()

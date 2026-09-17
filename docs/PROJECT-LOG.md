@@ -169,7 +169,7 @@ The venv keeps its own copies and is unaffected. **Lesson:** use a venv from the
 | Enabling model access | **$0** — no subscription, no idle charge |
 | IAM, API keys, budget alarms | **$0** |
 | **Bedrock inference** | **$0.16 per incident run** (measured live — see below) |
-| Snowflake | **$0** — 30-day trial, $400 credits |
+| Snowflake | **$0** — 30-day trial, $400 credits, *if the seed's schedules are torn down* (§6, bug 13) |
 | S3, SES, Lambda, API Gateway | **~$0** at demo volume |
 | AgentCore Runtime | **$0** — running locally |
 
@@ -480,6 +480,144 @@ inactive, because caching has always been inactive. The $0.16 incident is the re
 For Friday: this is the cleanest example in the project of measurement beating
 assumption. The optimisation was in the code, in the architecture doc and in the README,
 and its lifetime contribution was zero.
+
+### Bug 13 — the seed script left two schedules running, 17 Sep
+
+`seed_snowflake.sql` set the demo task to a 10-minute schedule and the data metric
+functions to 5 minutes, so the metadata views would populate in minutes rather than
+hours. Correct for verification. Wrong to ship without a teardown.
+
+The cost is worse than the schedule looks, because **Snowflake bills warehouse time per
+second with a 60-second minimum on every resume**. A two-second query every 10 minutes
+is billed as a full minute, 144 times a day:
+
+| | |
+|---|---|
+| Per run | ~0.018 credits (60s minimum + `AUTO_SUSPEND=60` idle) |
+| Per day | ~2.6 credits |
+| Per month | ~78 credits — call it $150–300 at Enterprise list |
+| DMFs on top | 864 serverless evaluations a day |
+
+On a $400 trial that is most of the balance, spent on a table nothing reads.
+
+**Fix:** §8 of the seed script is now a teardown — `ALTER TASK ... SUSPEND`, `ALTER TABLE
+... UNSET DATA_METRIC_SCHEDULE`, the arithmetic above so the next person sees why, the
+two `ACCOUNT_USAGE` queries that show what was actually consumed, and the `DROP DATABASE`
+for when the demo is over.
+
+Found because Chaitanya asked *"do those tasks charge anything"*. It is the question the
+script's own comments should have answered before anyone had to ask.
+
+**The generalisable version:** a setting chosen to make a test fast is not a default.
+Same discipline as refusing to tune a confidence threshold to improve a demo — don't
+leave the demo's scaffolding running either.
+
+---
+
+### Bug 14 — a dead mail server killed the incident, 17 Sep
+
+The first run with SES actually wired up got as far as `gate_open`, then died:
+
+```
+botocore.exceptions.NoCredentialsError: Unable to locate credentials
+During task with name 'business_gate'
+```
+
+Bedrock authenticates with an API key; SES needs IAM credentials, which this machine did
+not have. A fair enough mistake. The problem is what happened next: the exception
+travelled up through `send_approval_request` → `run_gate` → the LangGraph node → out of
+`graph.invoke()`, and **took the incident with it**. Two minutes of reasoning, $0.15,
+four specialists, two RCA rounds, twenty-odd audit events — discarded, because a mail
+server was unreachable.
+
+**Why it was wrong, precisely.** This system already refuses to send in one circumstance:
+`DisclosureViolation`, when the content is about to reach the wrong person. Stopping
+there is correct. A transport failure is the mirror image — the content was correct and
+permitted, the pipe was broken — and it was being handled identically. The code could not
+distinguish *we must not do this* from *we could not do this*, and in the second case it
+destroyed the record that would have explained which.
+
+**Fix, in two parts.**
+
+`EmailSink._attempt` catches transport errors onto the message (`delivered=False`,
+`delivery_error="..."`) and carries on. The firewall check runs before it and is never
+caught. The tempting one-liner — wrap the whole send in `except Exception` — would have
+swallowed the firewall too, logging a *refused* message as an undelivered one and turning
+a working control into a shrug. `TestDisclosureRefusalIsStillFatal` pins that.
+
+Then the governance half, which is the more interesting one. **If the approval email
+never arrived, was the human asked?** `run_gate` now asks the responder itself, via
+`Responder.depends_on_delivery`:
+
+| Responder | Depends on delivery | Behaviour on a failed send |
+|---|---|---|
+| `PendingResponder` (production) | yes — the verdict *is* a click in that email | `approval_timeout`, reason "never delivered" → escalates |
+| `ConsoleResponder` (live demo) | no — answers at the terminal | verdict stands, failure recorded |
+| `ScriptedResponder` (eval) | no — answer comes from the scenario | verdict stands, failure recorded |
+
+Recording a verdict against a request that never arrived would be the system
+manufacturing its own approval. That is a governance failure dressed as resilience, and
+it is worth saying out loud because the resilient-looking fix is the wrong one.
+
+**Third thing the run exposed.** `build_integrations` falls back to `MockEmailSink` when
+the provider is configured but the sender is not — correct, but silent. With
+`AEGIS_SES_SENDER` unexported, a run printed five delivered messages and had emailed
+nobody. `email_mode()` now prints `email: ses` or `email: mock` in the run banner, and
+the "who was told what" table has a delivery column. **Anything that can quietly become a
+mock has to say so at the top.**
+
+**Evidence it works** — heuristic backend, $0, credentials still absent:
+
+```
+5 of 5 message(s) were not delivered. The incident ran to completion and the
+audit trail records who was *not* reached.
+  NoCredentialsError: Unable to locate credentials
+```
+
+`outcome: resolved`, `audit chain: 26 events valid`. 14 new tests in
+`tests/test_delivery_failure.py`, one of which runs a complete incident through a dead
+mailer and asserts the chain still verifies. 123 passing.
+
+**The generalisable version:** an outbound integration is not part of the decision.
+Governance systems fail closed on *authority* questions and open on *plumbing* ones, and
+a system that cannot tell the two apart will eventually do the expensive thing for the
+cheap reason.
+
+---
+
+## 9c. Branch `aws-deployment` — storage layer, 17 Sep
+
+Optional production-path work, on a branch. **`main` remains the demo state.**
+
+`aegis/platform/storage.py` + `tests/test_storage.py`, then wired into the quarantine
+node. A `StorageClient` protocol with `SimulatedStorage` (over the seeded world, so evals
+stay offline and deterministic) and `S3Storage`.
+
+**Containment is now a move, not a flag.** Previously `quarantine_uri` was a string and
+`quarantined` a boolean — the README's fail-safe claim rested on a dataclass field, and a
+flag contains nothing, because whatever reads the landing prefix can still read the file.
+The quarantine node now calls `rt.storage.move(original_uri, quarantine_uri)`.
+
+Verified on `schema_drift`: object gone from landing, present in quarantine, audit records
+`object_moved: True`. **109 tests** (was 94), 118/118 evals unchanged, chain valid.
+
+Three decisions, mirroring the Snowflake client:
+
+- **No delete primitive.** `move` is the only write verb; its internal delete is scoped to
+  the key just copied. A test asserts the protocol's verb list structurally, so adding one
+  later fails loudly.
+- **Quarantine paths keyed by incident**, not by file — a second incident holding the same
+  file cannot erase the first's evidence. `move` refuses an existing target as backstop.
+- **Safe defaults.** `AEGIS_STORAGE_PROVIDER=simulated`; `s3` still defaults to
+  `dry_run`. Live must be named.
+
+A failed move is traced loudly and recorded separately in the audit (`object_moved:
+False`) rather than swallowed. Saying "quarantined" when nothing moved is the exact class
+of untrue claim this log keeps catching.
+
+Also `read_head(uri, max_bytes)` over an S3 Range request: drift detection needs a CSV
+header, not a 2 GB file, and bounding it at the source stops an agent pulling raw records
+into a prompt past the disclosure firewall.
 
 ---
 
