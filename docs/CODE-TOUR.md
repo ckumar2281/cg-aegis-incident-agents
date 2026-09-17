@@ -151,7 +151,7 @@ be attacked, and the answer is that its boundaries are hard-coded and tested.
 
 ## 5. The defect list is the strongest thing you have
 
-`ARCHITECTURE.md` §7 lists **twelve defects found during the build**, with what each one
+`ARCHITECTURE.md` §7 lists **thirteen defects found during the build**, with what each one
 taught. Counter-intuitive, but lead with it if the conversation goes technical: a
 candidate who found eleven bugs in their own work and wrote them down is more credible
 than one whose demo simply worked.

@@ -289,7 +289,7 @@ docs/              see below
 
 | File | What it covers |
 |---|---|
-| [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) | The design, the hand-off contracts, the confidence-gate arithmetic, **§7: twelve defects found during the build**, and stated limitations |
+| [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) | The design, the hand-off contracts, the confidence-gate arithmetic, **§7: thirteen defects found during the build**, and stated limitations |
 | [`CODE-TOUR.md`](docs/CODE-TOUR.md) | **Every claim mapped to the file and function that makes it true** — the reading order, and where to point when asked |
 | [`DEMO-GUIDE.md`](docs/DEMO-GUIDE.md) | How to run and present it, with honest answers to hard questions |
 | [`DEPLOYMENT.md`](docs/DEPLOYMENT.md) | The AgentCore path, and the one part that is a real architectural change |

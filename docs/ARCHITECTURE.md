@@ -366,7 +366,7 @@ vector store with a **2-OCU minimum, roughly $345/month at zero queries**.
 
 ## 7. What went wrong, and what it teaches
 
-Twelve defects found during the build. These are recorded because a reviewer will probe
+Thirteen defects found during the build. These are recorded because a reviewer will probe
 exactly here, and because the fixes are more interesting than the features.
 
 | # | Defect | Why it matters |
@@ -383,6 +383,7 @@ exactly here, and because the fixes are more interesting than the features.
 | 10 | **Neither an approval-request body nor any subject line was ever firewall-checked.** Only the brief's individual fields were | Anything the email renderer added *between* the fields left the building unchecked |
 | 11 | Two firewall rules were **over-broad in ways only a rendered email could reveal** | A control that blocks the recipient's own approval button is a control that gets switched off |
 | 12 | **Prompt caching never once fired.** The system prompts are far below Bedrock's minimum cacheable prefix, so every cache point was silently ignored | A documented cost optimisation that has never executed is a claim, not an optimisation |
+| 13 | The Snowflake seed script left **a task on a 10-minute schedule and DMFs on a 5-minute one**, with no teardown | Tuned for fast verification, shipped as a standing cost. ~78 credits/month for a table nobody reads |
 
 ### The two firewall holes are the instructive ones
 
@@ -502,6 +503,28 @@ inactive, so none of them move.
 
 > **An optimisation you have not measured is a belief.** This one was in the code, in
 > the architecture doc and in the README, and its contribution to date is exactly zero.
+
+### Defect 13: a verification convenience that became a standing bill
+
+`seed_snowflake.sql` set the demo task to run every 10 minutes and the data metric
+functions every 5, so the metadata views would populate in minutes instead of hours. That
+was the right call for verifying the client. Shipping it without a teardown was not.
+
+The cost is larger than the schedule suggests, for a reason that is easy to miss:
+Snowflake bills warehouse time per second **with a 60-second minimum on every resume**. A
+two-second query every 10 minutes is billed as a full minute, 144 times a day — roughly
+2.6 credits/day, ~78 credits a month, on a table nothing reads. The DMFs add 864
+serverless evaluations a day on top.
+
+The script now ends with a teardown section that suspends both, explains the arithmetic,
+and prints what was actually consumed. Caught by the user asking "do those tasks charge
+anything" — which is the question I should have answered in the script's own comments
+before anyone had to ask it.
+
+> **A setting chosen to make a test fast is not a default.** The same reasoning that says
+> "don't tune a safety threshold to improve a demo" says "don't leave the demo's
+> scaffolding running."
+
 
 ---
 
