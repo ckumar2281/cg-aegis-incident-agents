@@ -113,13 +113,19 @@ ALTER VIEW MART.DAILY_REVENUE SET
 --    the query; a useful 30-day baseline obviously needs 30 days.
 -- --------------------------------------------------------------------------- --
 
+-- Also deliberately aggressive, and also to be turned off after verifying. DMF
+-- evaluations run on serverless compute and are billed each time they fire.
 ALTER TABLE RAW.STRIPE_CHARGES SET DATA_METRIC_SCHEDULE = '5 MINUTE';
 ALTER TABLE RAW.STRIPE_CHARGES
     ADD DATA METRIC FUNCTION SNOWFLAKE.CORE.NULL_COUNT ON (currency_code);
 ALTER TABLE RAW.STRIPE_CHARGES
     ADD DATA METRIC FUNCTION SNOWFLAKE.CORE.ROW_COUNT ON ();
+-- FRESHNESS with no column = seconds since the last DML on the table, which is the
+-- right notion for a pipeline. Note it accepts only DATE / TIMESTAMP_LTZ / TIMESTAMP_TZ
+-- as a column argument -- passing a TIMESTAMP_NTZ column reports the *function* as
+-- non-existent rather than the type as wrong, which costs an unnecessary ten minutes.
 ALTER TABLE RAW.STRIPE_CHARGES
-    ADD DATA METRIC FUNCTION SNOWFLAKE.CORE.FRESHNESS ON (created_at);
+    ADD DATA METRIC FUNCTION SNOWFLAKE.CORE.FRESHNESS ON ();
 
 -- --------------------------------------------------------------------------- --
 -- 4. A task that runs -> TASK_HISTORY
@@ -133,6 +139,9 @@ CREATE OR REPLACE TASK OPS.REFRESH_DAILY_REVENUE
 AS
     CREATE OR REPLACE TABLE MART.DAILY_REVENUE_SNAPSHOT AS SELECT * FROM MART.DAILY_REVENUE;
 
+-- The schedule is aggressive on purpose: it exists so TASK_HISTORY has rows within
+-- minutes rather than hours. It is NOT a cost-sensible steady state -- see the teardown
+-- at the bottom of this file and run it as soon as verification passes.
 ALTER TASK OPS.REFRESH_DAILY_REVENUE RESUME;
 EXECUTE TASK OPS.REFRESH_DAILY_REVENUE;   -- one run now, so TASK_HISTORY is not empty
 
@@ -183,7 +192,7 @@ GRANT MONITOR ON ALL TASKS IN DATABASE CG_AEGIS_DEMO TO ROLE AEGIS_AGENT;
 -- Deliberately absent: INSERT, UPDATE, DELETE, TRUNCATE, DROP, OWNERSHIP.
 -- The client defaults to dry-run anyway; this is the second lock, at the database.
 
-GRANT ROLE AEGIS_AGENT TO USER ENTERUSERNAME;
+GRANT ROLE AEGIS_AGENT TO USER IDENTIFIER(CURRENT_USER());
 
 -- --------------------------------------------------------------------------- --
 -- Sanity check. Run after a few minutes; ACCOUNT_USAGE rows take longer.
@@ -193,3 +202,32 @@ SELECT 'tables'    AS what, COUNT(*) AS n FROM CG_AEGIS_DEMO.INFORMATION_SCHEMA.
 UNION ALL SELECT 'task runs',   COUNT(*) FROM TABLE(CG_AEGIS_DEMO.INFORMATION_SCHEMA.TASK_HISTORY())
 UNION ALL SELECT 'dmf results', COUNT(*) FROM SNOWFLAKE.LOCAL.DATA_QUALITY_MONITORING_RESULTS
 UNION ALL SELECT 'lineage',     COUNT(*) FROM SNOWFLAKE.ACCOUNT_USAGE.OBJECT_DEPENDENCIES WHERE referenced_database = 'CG_AEGIS_DEMO';
+
+-- --------------------------------------------------------------------------- --
+-- 8. TEARDOWN -- run this as soon as the preflight has passed
+-- --------------------------------------------------------------------------- --
+--
+-- Both schedules above are tuned for *fast verification*, not for running. Left alone
+-- they are the single real cost in this whole project, and the reason is not obvious:
+-- Snowflake bills warehouse time per second **with a 60-second minimum on every
+-- resume**. A two-second query every 10 minutes is billed as a minute of warehouse
+-- time, 144 times a day -- roughly 2.6 credits/day, ~78 credits a month, for a table
+-- nobody reads. The DMFs add serverless evaluations on top, 864 a day at this schedule.
+--
+-- Nothing is lost by stopping them. TASK_HISTORY and DATA_QUALITY_MONITORING_RESULTS
+-- keep what they already recorded, and one statement restarts either.
+
+ALTER TASK OPS.REFRESH_DAILY_REVENUE SUSPEND;
+ALTER TABLE RAW.STRIPE_CHARGES UNSET DATA_METRIC_SCHEDULE;
+
+-- What it cost (ACCOUNT_USAGE, so a couple of hours behind):
+SELECT 'warehouse' AS meter, COALESCE(SUM(credits_used), 0) AS credits
+  FROM SNOWFLAKE.ACCOUNT_USAGE.WAREHOUSE_METERING_HISTORY
+ WHERE warehouse_name = 'CG_AEGIS_WH'
+UNION ALL
+SELECT 'data quality', COALESCE(SUM(credits_used), 0)
+  FROM SNOWFLAKE.ACCOUNT_USAGE.DATA_QUALITY_MONITORING_USAGE_HISTORY;
+
+-- And when the demo is over, the whole thing goes in one statement:
+--   DROP DATABASE CG_AEGIS_DEMO;
+--   DROP WAREHOUSE CG_AEGIS_WH;
