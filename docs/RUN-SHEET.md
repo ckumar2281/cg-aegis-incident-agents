@@ -1,7 +1,19 @@
 # Run sheet — 20 minutes
 
-`DEMO-GUIDE.md` is the reference: framing, hard questions, what to say if something
-breaks. **This is the thing you hold during the meeting.**
+> ## This is the only document you need on the day.
+>
+> Follow it top to bottom. Everything else in `docs/` is reference you open **only if
+> asked a question you want backup for** — you do not read them during the demo.
+>
+> | If they ask | Open |
+> |---|---|
+> | "what does that line mean?" | `AGENT-NARRATION.md` |
+> | "which file does that?" | `CODEBASE-MAP.md` |
+> | "why is it built this way?" | `ARCHITECTURE.md` |
+> | "how would this run in production?" | `DEPLOYMENT.md` |
+> | a hard or awkward question | `DEMO-GUIDE.md` §4 |
+>
+> A printable copy of this page: **`docs/DEMO-DAY.html`** — open it in a browser.
 
 The shape: start the slow live run first and talk over it, rather than watching a
 spinner in silence. Everything after it is instant.

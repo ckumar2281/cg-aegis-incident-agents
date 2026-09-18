@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aegis — Demo Day</title>
+<style>
+:root { --ink:#14181f; --paper:#fbfbf8; --muted:#5a6470; --line:#e3e1d9;
+        --green:#2e6f4e; --rust:#a03e2b; --card:#ffffff; }
+* { box-sizing:border-box; }
+body { margin:0; padding:40px 20px 80px; background:var(--paper); color:var(--ink);
+       font:17px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+.wrap { max-width:860px; margin:0 auto; }
+h1 { font-size:34px; line-height:1.15; letter-spacing:-0.5px; margin:0 0 24px; }
+h2 { font-size:25px; line-height:1.2; margin:44px 0 14px; padding-top:20px;
+     border-top:2px solid var(--line); }
+h2:first-of-type { border-top:none; padding-top:0; }
+h3 { font-size:19px; margin:26px 0 10px; }
+p, li { font-size:17px; }
+ul, ol { padding-left:24px; }
+li { margin:5px 0; }
+blockquote { margin:20px 0; padding:18px 22px; background:var(--card);
+             border-left:4px solid var(--green); border-radius:0 8px 8px 0; }
+blockquote h2 { font-size:21px; margin:0 0 10px; border:none; padding:0; color:var(--green); }
+blockquote p:first-child { margin-top:0; }
+blockquote p:last-child { margin-bottom:0; }
+code { font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:15px;
+       background:#f0efe8; padding:2px 6px; border-radius:4px; }
+pre { background:var(--ink); color:#eef1ee; padding:16px 18px; border-radius:8px;
+      overflow-x:auto; line-height:1.5; }
+pre code { background:none; color:inherit; padding:0; font-size:14.5px; }
+table { border-collapse:collapse; width:100%; margin:18px 0; font-size:16px; }
+th, td { text-align:left; padding:9px 12px; border-bottom:1px solid var(--line);
+         vertical-align:top; }
+th { background:#f2f1ea; font-weight:600; font-size:14px; text-transform:uppercase;
+     letter-spacing:0.04em; color:var(--muted); }
+hr { border:none; border-top:2px solid var(--line); margin:36px 0; }
+strong { font-weight:600; }
+a { color:var(--green); }
+@media print {
+  body { padding:0; font-size:12pt; background:#fff; }
+  .wrap { max-width:none; }
+  pre { background:#f4f4f2; color:#14181f; border:1px solid #ddd; }
+  h2 { page-break-after:avoid; }
+  pre, table, blockquote { page-break-inside:avoid; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>Run sheet — 20 minutes</h1>
+<blockquote>
+<h2>This is the only document you need on the day.</h2>
+<p>Follow it top to bottom. Everything else in <code>docs/</code> is reference you open <strong>only if
+asked a question you want backup for</strong> — you do not read them during the demo.</p>
+<table>
+<thead>
+<tr>
+<th>If they ask</th>
+<th>Open</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>"what does that line mean?"</td>
+<td><code>AGENT-NARRATION.md</code></td>
+</tr>
+<tr>
+<td>"which file does that?"</td>
+<td><code>CODEBASE-MAP.md</code></td>
+</tr>
+<tr>
+<td>"why is it built this way?"</td>
+<td><code>ARCHITECTURE.md</code></td>
+</tr>
+<tr>
+<td>"how would this run in production?"</td>
+<td><code>DEPLOYMENT.md</code></td>
+</tr>
+<tr>
+<td>a hard or awkward question</td>
+<td><code>DEMO-GUIDE.md</code> §4</td>
+</tr>
+</tbody>
+</table>
+<p>A printable copy of this page: <strong><code>docs/DEMO-DAY.html</code></strong> — open it in a browser.</p>
+</blockquote>
+<p>The shape: start the slow live run first and talk over it, rather than watching a
+spinner in silence. Everything after it is instant.</p>
+<hr />
+<h2>Before you start — 2 minutes, do not skip</h2>
+<pre><code class="language-bash">cd ~/projects/aegis
+source ~/.zshrc
+python scripts/seed_s3.py --reset          # landing restored, quarantine emptied
+python scripts/seed_s3.py --check          # 4 objects in landing, quarantine empty
+AEGIS_MODEL_BACKEND=heuristic python -m aegis.cli run --all --report runs/report.html
+</code></pre>
+<p>Open and leave open:</p>
+<ol>
+<li><strong>Terminal A</strong> — the project, big font</li>
+<li><strong>Terminal B</strong> — a second tab, same directory (for the live run)</li>
+<li><code>docs/graph.html</code> in a browser tab</li>
+<li><code>runs/report.html</code> in a browser tab</li>
+<li>The <strong>S3 console</strong>, on the quarantine bucket</li>
+<li>Your <strong>inbox</strong>, with the five messages from a previous run already there</li>
+</ol>
+<p>Check the banner on a throwaway run reads: <code>email: ses    storage: s3 (live)</code>.
+If it says <code>mock</code> or <code>simulated</code>, you did not <code>source ~/.zshrc</code>.</p>
+<hr />
+<h2>0:00 – 1:30 · Framing</h2>
+<blockquote>
+<p>"Data incidents are not usually hard because the fix is hard. They are hard because
+nobody agrees who is allowed to decide. So I built the governance first and the
+automation second. Aegis triages, diagnoses and fixes data pipeline incidents — and
+the interesting part is where it stops and asks a human."</p>
+</blockquote>
+<p>One sentence on the rule, because it is <em>yours</em>:</p>
+<blockquote>
+<p>"First time a class of problem appears, a human approves. After that, the same class
+is automated. Anything that adds, deletes, or changes scope still needs the Product
+Owner, every time."</p>
+</blockquote>
+<hr />
+<h2>1:30 – 2:00 · Start the live run (Terminal B)</h2>
+<pre><code class="language-bash">python scripts/seed_s3.py --reset
+python -m aegis.cli run schema_drift -v
+</code></pre>
+<blockquote>
+<p>"That is running against Bedrock — real models, about two minutes. While it works,
+let me show you the architecture."</p>
+</blockquote>
+<p><strong>Switch to the browser. Do not watch it.</strong></p>
+<hr />
+<h2>2:00 – 5:00 · Architecture, while it runs · <code>docs/graph.html</code></h2>
+<ul>
+<li>Generated from the compiled graph at runtime — <strong>it cannot drift from the code</strong>.</li>
+<li><code>quarantine</code> runs first, on every incident, before any agent. Containment is
+  fail-safe: the node decides there is nothing to contain, the graph never decides
+  whether to <em>try</em>.</li>
+<li><code>triage</code> fans out to <strong>four specialists in one superstep</strong> — different data,
+  different questions, merged through a list reducer.</li>
+<li><strong>The dashed edges are the answer to "is this really multi-agent".</strong> Those are
+  computed at runtime by a routing function. <code>rca ⇢ round_two</code> is a loop: short
+  confidence sends fresh directives back to the specialists, bounded at two rounds.</li>
+<li><code>plan ⇢ autonomous</code> bypasses every gate for low-risk reversible work.</li>
+<li><code>business_gate ⇢ technical_gate</code> is tiered disclosure. <code>⇢ rejected</code> is the human
+  saying no.</li>
+</ul>
+<p>If there is time: <strong>why multi-agent</strong> —</p>
+<blockquote>
+<p>"Confidence is a function of agreement between independent specialists. A single
+call cannot corroborate itself. Collapse the agents and that term goes to 1 for
+everything."</p>
+</blockquote>
+<hr />
+<h2>5:00 – 9:00 · Back to the live run · Terminal B</h2>
+<p>Walk the trace top to bottom:</p>
+<table>
+<thead>
+<tr>
+<th>Point at</th>
+<th>Say</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>quarantine … storage  object moved to s3://…</code></td>
+<td>"That is a real 6MB object, really moved between buckets. Containment is a move, not a flag."</td>
+</tr>
+<tr>
+<td><code>triage  6 alerts -&gt; 1 incident (SEV1)</code></td>
+<td>"Six alerts fired. A human on call opens six tickets or mutes the channel. Triage returns one incident with a severity and a blast radius."</td>
+</tr>
+<tr>
+<td>the four <code>handoff  triage -&gt; …</code> lines</td>
+<td>"<strong>Each specialist gets a different question, written by triage.</strong> That is the hand-off contract — typed, not a string."</td>
+</tr>
+<tr>
+<td><code>rca … -&gt; dig_deeper</code> then round two</td>
+<td>"Confidence was short, so it went back for more evidence rather than guessing."</td>
+</tr>
+<tr>
+<td><code>autonomy  supervisor  always-gated action</code></td>
+<td>"<code>release_quarantine</code> is always gated. No confidence score unlocks it."</td>
+</tr>
+<tr>
+<td><code>disclosure  business brief cleared the redaction firewall</code></td>
+<td>"Machine-enforced. Thirteen rules. The business brief cannot contain a table name."</td>
+</tr>
+<tr>
+<td><code>disclosure_released</code></td>
+<td>"The technical packet did not exist for the dev team until the business approved."</td>
+</tr>
+<tr>
+<td>the <code>who was told what</code> table</td>
+<td>"Five real emails. Two tiers."</td>
+</tr>
+</tbody>
+</table>
+<p>Then <strong>the inbox</strong> — open the PO email and the developer email side by side.</p>
+<blockquote>
+<p>"Same incident. The PO gets ARR and churn campaigns. The developer gets
+<code>RAW.STRIPE_CHARGES</code> and the fix. The second one only exists because the first
+was approved."</p>
+</blockquote>
+<p>Then <strong>the S3 console</strong> — the v4 file in quarantine, the valid v3 file still in landing.</p>
+<p>Cost line at the bottom: <strong>$0.15, 22 model calls.</strong></p>
+<hr />
+<h2>9:00 – 10:30 · The boring case · Terminal A</h2>
+<pre><code class="language-bash">AEGIS_MODEL_BACKEND=heuristic python -m aegis.cli run transient_timeout
+</code></pre>
+<blockquote>
+<p>"A tier-3 asset missed its build, contention has cleared, the fix is a retry.
+Nobody is woken. Same graph, same agents — the ladder is a real decision, not
+decoration. If it asked permission for this, people would switch it off."</p>
+</blockquote>
+<hr />
+<h2>10:30 – 13:00 · The human says no</h2>
+<pre><code class="language-bash">python scripts/seed_s3.py --reset
+AEGIS_MODEL_BACKEND=heuristic python -m aegis.cli run null_explosion
+</code></pre>
+<blockquote>
+<p>"The Product Owner rejects. The source is mid-migration and will backfill — fixing
+it now would bake in data that is about to be replaced. The system obeys: file stays
+held, ticket raised, pipeline owner told, nothing executed."</p>
+</blockquote>
+<p><strong>This is the most important run.</strong> Most agent demos only ever show approval.</p>
+<hr />
+<h2>13:00 – 15:30 · The punchline</h2>
+<pre><code class="language-bash">AEGIS_MODEL_BACKEND=heuristic python -m aegis.cli run ad_spend_drift
+AEGIS_MODEL_BACKEND=heuristic python -m aegis.cli run ad_spend_drift_repeat
+</code></pre>
+<blockquote>
+<p>"First time, a human approves. Three weeks later the same class of problem —
+<strong>nobody is asked.</strong> The approval became a standing decision. That was the design
+goal from day one: approve once, automate the shape."</p>
+</blockquote>
+<hr />
+<h2>15:30 – 18:00 · The evidence</h2>
+<p><strong><code>runs/report.html</code></strong> — hypotheses that lost and why, the approval chain, both
+disclosure tiers, the timeline.</p>
+<p>Then the part to lead with if the conversation goes technical — <strong><code>ARCHITECTURE.md</code> §7,
+fifteen defects</strong>:</p>
+<ul>
+<li><strong>#5</strong> — the autonomy ladder computed a decision and an unconditional edge ignored
+  it. <em>A decision nothing routes on is a log line.</em></li>
+<li><strong>#7–8</strong> — the redaction rule required three dotted parts; every table here has two.
+  <strong>It had never fired.</strong> <em>A control that has never been attacked is untested, not
+  working.</em></li>
+<li><strong>#14</strong> — SES raised <code>NoCredentialsError</code> and killed a two-minute incident. <em>Fail
+  closed on authority, open on plumbing.</em></li>
+<li><strong>#15 + the test</strong> — the suite read ambient config and was one variable from deleting
+  the demo's own data. <em>A safe default is only safe if it holds where you forgot to look.</em></li>
+</ul>
+<blockquote>
+<p>"I found fifteen bugs in my own work and wrote down what each one taught. That is
+more useful to you than a demo that simply worked."</p>
+</blockquote>
+<hr />
+<h2>18:00 – 20:00 · Limits, then questions</h2>
+<p>Say these before you are asked:</p>
+<ul>
+<li><strong>The containment decision is scripted.</strong> The scenario marks the file bad; the system
+  does not yet read the object and validate it. Everything downstream is real.</li>
+<li><strong>The Snowflake load is a fixture.</strong> The client is written and verified against a real
+  Enterprise account — <code>check_snowflake.py</code>, 13 of 14 methods returning real rows — but
+  the demo runs on the simulator so scenarios stay deterministic.</li>
+<li><strong>Approval links do not resolve.</strong> The token is real — signed, TTL-bounded, single-use.
+  What is missing is API Gateway plus a checkpointer so a paused incident can resume when
+  someone clicks hours later. That is the next build.</li>
+</ul>
+<hr />
+<h2>If something breaks</h2>
+<table>
+<thead>
+<tr>
+<th>Problem</th>
+<th>Do this</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>containment incomplete — source does not exist</code></td>
+<td>You forgot <code>--reset</code>. Say so, run it, move on.</td>
+</tr>
+<tr>
+<td>Live confidence lands near 40% and it <strong>escalates</strong></td>
+<td><em>"Below 40% it escalates to a human instead of proceeding. That is the design working."</em> Then show the heuristic run. <strong>Do not re-run hoping for a better number.</strong></td>
+</tr>
+<tr>
+<td>Bedrock is slow or erroring</td>
+<td>Drop <code>--bedrock</code>; every scenario runs on the heuristic backend in two seconds, $0.</td>
+</tr>
+<tr>
+<td>Emails do not arrive</td>
+<td>The delivery column already told you. The incident completes anyway — that is defect 14.</td>
+</tr>
+<tr>
+<td>Anything else</td>
+<td><code>runs/report.html</code> has every incident already rendered.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>The three sentences to land</h2>
+<ol>
+<li><strong>"The graph does not know in advance which way it will go."</strong> — dashed edges.</li>
+<li><strong>"The technical fix did not exist for the dev team until the business approved."</strong> — tiered disclosure.</li>
+<li><strong>"Approve once, automate the shape."</strong> — precedent, and the rule I was given.</li>
+</ol>
+</div>
+</body>
+</html>
